@@ -1,54 +1,94 @@
-1of1-nba-predictions/  # Root repo name
-├── .github/           # GitHub-specific configs
-│   └── workflows/     # CI/CD pipelines
-│       └── daily-pipeline.yml  # The GitHub Action YAML for running the data pipeline
-├── nba-pipeline/          # Backend/data pipeline (Python-based)
-│   ├── src/           # Main code
-│   │   ├── __init__.py
-│   │   ├── ingestion.py  # NBA data pulling (nba_api, injuries, etc.)
-│   │   ├── features.py   # Feature engineering logic
-│   │   ├── model.py      # Training/inference (LightGBM/XGBoost)
-│   │   └── utils.py      # Helpers (e.g., Supabase connection)
-│   ├── models/        # Stored model artifacts (e.g., pickled LightGBM files)
-│   │   └── v1.0.model
-│   ├── requirements.txt  # Python deps (nba_api, pandas, lightgbm, supabase, etc.)
-│   ├── run_pipeline.py   # Entry point script for the full batch job
-│   ├── config.py         # Env vars, constants (e.g., API endpoints)
-│   └── tests/            # Unit tests (e.g., pytest for features/inference)
-├── web/               # Next.js dashboard (Vercel-hosted)
-│   ├── app/           # Next.js 14+ app router structure
-│   │   ├── page.tsx   # Root page (today's games table)
-│   │   ├── games/     # Dynamic routes/filters
-│   │   │   └── [date].tsx
-│   │   └── api/       # API routes if needed (e.g., proxy Supabase for auth)
-│   │       └── predictions/route.ts
-│   ├── components/    # Reusable UI (e.g., GameTable, AuthGate)
-│   ├── lib/           # Utilities (e.g., Supabase client init)
-│   ├── public/        # Static assets (logos, etc.)
-│   ├── .env.local     # Local env (Supabase URL/anon key — gitignore this)
-│   ├── next.config.js # Vercel/Next configs
-│   ├── package.json   # Node deps (next, react, @supabase/supabase-js, etc.)
-│   ├── tsconfig.json  # TypeScript setup
-│   └── vercel.json    # Deployment configs (e.g., cron if you add it later)
-├── desktop/           # Tauri app (Rust + web UI)
-│   ├── src/           # Rust backend
-│   │   ├── main.rs    # Entry point
-│   │   └── kalshi.rs  # Kalshi API integration (signing, execution)
-│   ├── src-tauri/     # Tauri configs (tauri.conf.json for builds, keychain storage)
-│   ├── public/        # Web assets if needed
-│   ├── index.html     # Minimal web UI (e.g., predictions viewer + execute button)
-│   ├── package.json   # If using JS for UI (e.g., React/Vite integration)
-│   ├── Cargo.toml     # Rust deps (reqwest for API calls, rsa for signing, etc.)
-│   └── tauri.conf.json # App config (window size, permissions for keychain/OS)
-├── shared/            # Cross-component reusables (optional but useful)
-│   ├── schemas/       # DB schema definitions (SQL files for Supabase tables)
-│   │   └── init.sql   # CREATE TABLE scripts for nba_games, predictions, etc.
-│   └── types/         # Shared TypeScript types (e.g., Prediction interface for web/desktop)
-│       └── index.ts
-├── docs/              # Documentation
-│   ├── architecture.md  # High-level overview (like the original spec)
-│   └── setup.md         # How to run locally (pipeline, web, desktop)
-├── .env.example       # Template for env vars (Supabase keys, etc. — no secrets here)
-├── .gitignore         # Ignore node_modules, .env, build artifacts, etc.
-├── LICENSE            # e.g., MIT
-└── README.md          # Project overview, setup instructions, how to deploy
+# File Structure
+
+```
+oneofone/
+├── .github/
+│   └── workflows/
+│       ├── nba-pipeline.yml              # NBA scheduled automation (3x daily)
+│       └── mlb-pipeline.yml              # MLB scheduled automation (daily + every 10 min)
+│
+├── nba-pipeline/
+│   ├── src/
+│   │   ├── games.py                      # Game schedule + roster ingestion (nba_api)
+│   │   ├── players.py                    # Player metadata (active players per season)
+│   │   ├── playerstats.py                # Per-player game stats (league game logs)
+│   │   ├── gamelogs.py                   # Rolling feature engineering (10/30 game windows)
+│   │   ├── train.py                      # XGBoost model training (chronological split)
+│   │   ├── predict.py                    # Daily inference → writes to Supabase
+│   │   └── __init__.py
+│   ├── run_pipeline.py                   # Orchestrator: historical | current
+│   ├── models/
+│   │   └── nba_winner.json               # Trained XGBoost model artifact
+│   ├── requirements.txt
+│   └── tests/
+│
+├── mlb-pipeline/
+│   ├── src/
+│   │   ├── games.py                      # Schedule + lineup ingestion (MLB Stats API)
+│   │   ├── players.py                    # Player metadata + batter/pitcher classification
+│   │   ├── playerstats.py                # Per-player batting/pitching game logs
+│   │   ├── gamelogs.py                   # Lineup-weighted rolling feature engineering
+│   │   ├── train.py                      # XGBoost model training (108 features)
+│   │   ├── predict.py                    # Daily inference → writes to Supabase
+│   │   └── __init__.py
+│   ├── run_pipeline.py                   # Orchestrator: historical | current | live
+│   ├── models/
+│   │   ├── mlb_winner.json               # Trained XGBoost model artifact
+│   │   └── mlb_winner_report.json        # Training metrics + feature importances
+│   ├── migrations/
+│   │   ├── 001_create_tables.sql         # Initial MLB table creation
+│   │   └── 002_add_lineup_columns.sql    # Lineup array columns on gamelogs
+│   └── requirements.txt
+│
+├── web/                                  # Next.js 16 dashboard (Vercel)
+│   ├── src/
+│   │   ├── app/
+│   │   │   ├── layout.tsx                # Root layout with Nav
+│   │   │   ├── page.tsx                  # Home page (NBA / MLB buttons)
+│   │   │   ├── nba/page.tsx              # NBA predictions page
+│   │   │   └── mlb/page.tsx              # MLB predictions page
+│   │   ├── components/
+│   │   │   ├── Nav.tsx                   # Sticky navigation bar
+│   │   │   ├── NbaDashboard.tsx          # NBA game list + records
+│   │   │   ├── MlbDashboard.tsx          # MLB game list + records
+│   │   │   ├── PredictionCard.tsx        # NBA game prediction card
+│   │   │   ├── MlbPredictionCard.tsx     # MLB game prediction card
+│   │   │   ├── DatePicker.tsx            # Date selection input
+│   │   │   └── RecordBadge.tsx           # W-L record display
+│   │   └── lib/
+│   │       ├── supabase.ts               # Supabase client initialization
+│   │       ├── types.ts                  # TypeScript interfaces (GameLog, MlbGameLog)
+│   │       └── dates.ts                  # Date helpers (Eastern timezone)
+│   ├── .env.local                        # Supabase URL + anon key (gitignored)
+│   ├── package.json
+│   ├── tsconfig.json
+│   └── next.config.ts
+│
+├── desktop/                              # Tauri 2 trading app
+│   ├── src/                              # React frontend (Vite)
+│   └── src-tauri/
+│       └── src/                          # Rust backend (Kalshi API, scanner)
+│
+├── shared/
+│   ├── nba/
+│   │   └── nba_constants.py              # Team abbreviations, IDs, name mappings
+│   ├── mlb/
+│   │   └── mlb_constants.py              # MLB team ID/name/abbreviation mappings
+│   └── schemas/                          # Supabase table schema definitions
+│       ├── games                         # NBA games table
+│       ├── gamelogs                      # NBA gamelogs table
+│       ├── players                       # NBA players table
+│       ├── playerstats                   # NBA playerstats table
+│       ├── mlb_games                     # MLB games table
+│       ├── mlb_gamelogs                  # MLB gamelogs table
+│       ├── mlb_players                   # MLB players table
+│       └── mlb_playerstats              # MLB playerstats table
+│
+├── docs/
+│   └── architecture.md                   # This file
+│
+├── .env                                  # Supabase credentials (gitignored)
+├── .gitignore
+├── LICENSE                               # MIT
+└── README.md
+```

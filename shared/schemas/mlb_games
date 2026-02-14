@@ -1,0 +1,22 @@
+create table public.mlb_games (
+  "GAME_ID" bigint not null,
+  "CREATED_AT" timestamp with time zone not null default now(),
+  "SEASON_ID" integer null,
+  "GAME_DATE" timestamp with time zone null,
+  "AWAY_NAME" text null,
+  "HOME_NAME" text null,
+  "AWAY_ID" bigint null,
+  "HOME_ID" bigint null,
+  "GAME_STATUS" integer null,
+  "GAME_OUTCOME" integer null,
+  "AWAY_RUNS" smallint null,
+  "HOME_RUNS" smallint null,
+  "TOTAL_RUNS" smallint null,
+  "HOME_LINEUP" bigint[] null,
+  "AWAY_LINEUP" bigint[] null,
+  "HOME_SP" bigint null,
+  "AWAY_SP" bigint null,
+  "HOME_BULLPEN" bigint[] null,
+  "AWAY_BULLPEN" bigint[] null,
+  constraint mlb_games_pkey primary key ("GAME_ID")
+) TABLESPACE pg_default;

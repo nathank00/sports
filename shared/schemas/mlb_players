@@ -1,0 +1,10 @@
+create table public.mlb_players (
+  "PLAYER_ID" bigint not null,
+  "CREATED_AT" timestamp with time zone not null default now(),
+  "FULL_NAME" text null,
+  "TEAM_ID" bigint null,
+  "TEAM_NAME" text null,
+  "POSITION" text null,
+  "PLAYER_TYPE" text null,
+  constraint mlb_players_pkey primary key ("PLAYER_ID")
+) TABLESPACE pg_default;

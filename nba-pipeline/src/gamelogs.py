@@ -73,7 +73,7 @@ def get_current_season_year():
 # ---------------------------------------------------------------------------
 # 1. Paginated Supabase fetch
 # ---------------------------------------------------------------------------
-def fetch_paginated(table, select, filters=None):
+def fetch_paginated(table, select, filters=None, order_col=None):
     """Fetch all rows from a Supabase table using offset pagination.
 
     Args:
@@ -81,6 +81,8 @@ def fetch_paginated(table, select, filters=None):
         select: column selection string
         filters: list of (method, column, value) tuples
                  e.g. [("gte", "GAME_DATE", "2024-01-01"), ("in_", "SEASON_ID", [2023, 2024])]
+        order_col: column to ORDER BY for stable pagination (prevents row
+                   skipping/duplication between pages)
     Returns:
         list of dicts (all rows)
     """
@@ -91,6 +93,8 @@ def fetch_paginated(table, select, filters=None):
         query = supabase.table(table).select(select)
         for method, col, val in (filters or []):
             query = getattr(query, method)(col, val)
+        if order_col:
+            query = query.order(order_col)
         query = query.range(offset, offset + PAGE_SIZE - 1)
 
         response = query.execute()
@@ -117,7 +121,7 @@ def fetch_games(date_from=None, date_to=None, season_ids=None):
     if season_ids:
         filters.append(("in_", "SEASON_ID", season_ids))
 
-    rows = fetch_paginated("games", "*", filters)
+    rows = fetch_paginated("games", "*", filters, order_col="GAME_ID")
     if not rows:
         return pd.DataFrame()
 
@@ -149,7 +153,7 @@ def fetch_playerstats(date_from=None, date_to=None, season_ids=None):
         filters.append(("in_", "SEASON_ID", season_ids))
 
     logger.info("  Paginating playerstats from Supabase...")
-    rows = fetch_paginated("playerstats", select, filters)
+    rows = fetch_paginated("playerstats", select, filters, order_col="GAME_ID")
     if not rows:
         return pd.DataFrame()
 

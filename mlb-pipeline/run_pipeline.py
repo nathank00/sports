@@ -1,24 +1,25 @@
 #!/usr/bin/env python3
 """
-NBA Pipeline Runner
+MLB Pipeline Runner
 ===================
-Two modes designed for different scheduling cadences:
+Three modes designed for different scheduling cadences:
 
-  historical  — Full rebuild from scratch (2020-21 season to present).
+  historical  — Full rebuild from scratch (2020-present).
                 Deletes and regenerates all tables. Should rarely be needed.
-                Runtime: ~20 minutes.
+                Runtime: ~30 minutes.
 
-  current     — Daily delta update. Refreshes games, players, playerstats,
-                gamelogs for the last few days, retrains the model, and
-                generates predictions.
-                Scheduled to run 3x daily:
-                  9:00 AM ET  — morning refresh (picks up last night's results)
-                  12:15 PM ET — midday (picks up any lineup/status changes)
-                  1:00 PM ET  — pre-tip (final predictions before games start)
+  current     — Daily delta update. Run once per day (early morning).
+                Refreshes players/playerstats for recent games, rebuilds
+                gamelogs for the last few days, and retrains the model.
+
+  live        — Lightweight loop: games → gamelogs → predict.
+                Designed to run every ~10 minutes during game days to
+                capture newly posted lineups and generate predictions.
 
 Usage:
   python run_pipeline.py historical
   python run_pipeline.py current
+  python run_pipeline.py live
 """
 
 import sys
@@ -62,18 +63,18 @@ def run_script(name: str, mode: str | None = None) -> bool:
 # ─── Historical Mode ────────────────────────────────────────────────────────
 def run_historical():
     """
-    Full rebuild from scratch. Backfills all data from 2020-21 to present.
+    Full rebuild from scratch. Backfills all data from 2020 to present.
 
     Pipeline order:
-      1. games.py full        — fetch all games + rosters
+      1. games.py full        — fetch all games + lineups
       2. players.py full      — fetch all player metadata
-      3. playerstats.py full  — fetch all per-player game stats
+      3. playerstats.py full  — fetch all per-player game stats (~380k rows)
       4. gamelogs.py full     — compute all rolling features
       5. train.py             — retrain model on full dataset
       6. predict.py           — generate predictions for today (if games exist)
     """
     logger.info("=" * 60)
-    logger.info("  NBA PIPELINE — HISTORICAL (full rebuild)")
+    logger.info("  MLB PIPELINE — HISTORICAL (full rebuild)")
     logger.info("=" * 60)
 
     steps = [
@@ -97,10 +98,10 @@ def run_historical():
 # ─── Current Mode ───────────────────────────────────────────────────────────
 def run_current():
     """
-    Daily delta update. Run 3x per day (9 AM, 12:15 PM, 1 PM ET).
+    Daily delta update. Run once per day, ideally early morning.
 
     Pipeline order:
-      1. games.py current        — fetch/update recent games
+      1. games.py current        — fetch/update recent games + lineups
       2. players.py current      — add any new players this season
       3. playerstats.py current  — fetch stats for players in recent games
       4. gamelogs.py current     — recompute rolling features for recent games
@@ -108,7 +109,7 @@ def run_current():
       6. predict.py              — generate predictions for today
     """
     logger.info("=" * 60)
-    logger.info("  NBA PIPELINE — CURRENT (daily update)")
+    logger.info("  MLB PIPELINE — CURRENT (daily update)")
     logger.info("=" * 60)
 
     steps = [
@@ -129,10 +130,42 @@ def run_current():
     logger.info(f"Current pipeline complete [{time.time() - start:.0f}s total]")
 
 
+# ─── Live Mode ──────────────────────────────────────────────────────────────
+def run_live():
+    """
+    Lightweight refresh: games → gamelogs → predict.
+
+    Designed to run every ~10 minutes on game days.
+    Captures newly posted lineups and generates/updates predictions.
+
+    Does NOT run players.py or playerstats.py (those only need to run
+    once per day via 'current' mode) or train.py (model doesn't change
+    intra-day).
+    """
+    logger.info("=" * 60)
+    logger.info("  MLB PIPELINE — LIVE (lineup capture + predict)")
+    logger.info("=" * 60)
+
+    steps = [
+        ("games.py", "current"),
+        ("gamelogs.py", "current"),
+        ("predict.py", None),
+    ]
+
+    start = time.time()
+    for script, mode in steps:
+        if not run_script(script, mode):
+            logger.error(f"Pipeline aborted at {script}")
+            sys.exit(1)
+
+    logger.info(f"Live pipeline complete [{time.time() - start:.0f}s total]")
+
+
 # ─── CLI Entry Point ────────────────────────────────────────────────────────
 MODES = {
     "historical": run_historical,
     "current": run_current,
+    "live": run_live,
 }
 
 

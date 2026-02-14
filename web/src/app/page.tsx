@@ -18,7 +18,7 @@ export default function Home() {
         </Link>
         <Link
           href="/mlb"
-          className="rounded-lg border border-neutral-800 bg-neutral-900/50 px-10 py-5 text-lg font-semibold text-neutral-600 transition-all hover:border-neutral-700 hover:text-neutral-400"
+          className="rounded-lg border border-neutral-700 bg-neutral-900 px-10 py-5 text-lg font-semibold text-white transition-all hover:border-neutral-500 hover:bg-neutral-800"
         >
           MLB
         </Link>

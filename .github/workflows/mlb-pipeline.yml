@@ -1,0 +1,125 @@
+# ─────────────────────────────────────────────────────────────
+# MLB Pipeline — GitHub Actions
+# ─────────────────────────────────────────────────────────────
+# Three scheduled jobs:
+#
+#   1. daily    — runs "current" mode once at 9:00 AM ET (13:00 UTC)
+#                 Updates players, playerstats, gamelogs, retrains model
+#
+#   2. live     — runs "live" mode every 10 min from 11 AM – 1 AM ET
+#                 Captures lineups and generates predictions
+#
+#   3. historical — manual-only, full rebuild from scratch
+#
+# To ENABLE:  Go to Actions tab → "MLB Pipeline" → Enable workflow
+# To DISABLE: Go to Actions tab → "MLB Pipeline" → "..." → Disable workflow
+#
+# You can also temporarily disable individual jobs by commenting out
+# their cron schedule lines below.
+# ─────────────────────────────────────────────────────────────
+
+name: MLB Pipeline
+
+on:
+  schedule:
+    # Daily update — 9:00 AM ET (1:00 PM UTC)
+    - cron: "0 13 * * *"
+    # Live updates — every 10 min, 11 AM ET to 1 AM ET (15:00–05:00 UTC)
+    # GitHub cron doesn't support ranges that wrap midnight, so we use two entries:
+    #   15:00–23:50 UTC (11 AM – 7:50 PM ET)
+    - cron: "*/10 15-23 * * *"
+    #   00:00–05:00 UTC (8 PM – 1 AM ET)
+    - cron: "*/10 0-5 * * *"
+
+  # Allow manual trigger from the Actions tab
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Pipeline mode to run"
+        required: true
+        default: "current"
+        type: choice
+        options:
+          - current
+          - live
+          - historical
+
+# Only one pipeline run at a time (cancel older if new one starts)
+concurrency:
+  group: mlb-pipeline
+  cancel-in-progress: true
+
+jobs:
+  # ─── Daily Update ───────────────────────────────────────────
+  daily:
+    if: github.event_name == 'schedule' && github.event.schedule == '0 13 * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: mlb-pipeline/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r mlb-pipeline/requirements.txt
+
+      - name: Run current pipeline
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python mlb-pipeline/run_pipeline.py current
+
+  # ─── Live Updates (every 10 min during game hours) ──────────
+  live:
+    if: >-
+      github.event_name == 'schedule' &&
+      github.event.schedule != '0 13 * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: mlb-pipeline/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r mlb-pipeline/requirements.txt
+
+      - name: Run live pipeline
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python mlb-pipeline/run_pipeline.py live
+
+  # ─── Manual Trigger ─────────────────────────────────────────
+  manual:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: mlb-pipeline/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r mlb-pipeline/requirements.txt
+
+      - name: Run ${{ inputs.mode }} pipeline
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python mlb-pipeline/run_pipeline.py ${{ inputs.mode }}
