@@ -145,6 +145,34 @@ def _result_sets_to_dataframes(data):
 
 
 # ---------------------------------------------------------------------------
+# Timezone helper
+# ---------------------------------------------------------------------------
+
+def _utc_to_eastern_date(utc_str):
+    """
+    Convert a UTC timestamp string (e.g. '2026-02-21T00:30:00Z') to an
+    Eastern-time date string ('2026-02-20'). This is critical because most
+    NBA games tip off 7-10:30 PM ET, which is the next day in UTC.
+    """
+    if not utc_str:
+        return ""
+    try:
+        from datetime import datetime, timezone, timedelta
+        from zoneinfo import ZoneInfo
+        # Parse UTC timestamp
+        clean = utc_str.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(clean)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        # Convert to Eastern
+        eastern = dt.astimezone(ZoneInfo("America/New_York"))
+        return eastern.strftime("%Y-%m-%d")
+    except Exception:
+        # Last resort: just truncate (wrong for evening games, but better than crashing)
+        return utc_str[:10]
+
+
+# ---------------------------------------------------------------------------
 # CDN parsers — convert CDN JSON into DataFrames matching stats.nba.com format
 # ---------------------------------------------------------------------------
 
@@ -153,9 +181,13 @@ def _cdn_scoreboard_to_dataframes(data):
     Convert CDN todaysScoreboard JSON into DataFrames matching ScoreboardV2
     resultSets format: [GameHeader, LineScore, ...].
     """
-    games = data.get("scoreboard", {}).get("games", [])
+    scoreboard = data.get("scoreboard", {})
+    games = scoreboard.get("games", [])
     if not games:
         return [pd.DataFrame(), pd.DataFrame()]
+
+    # The scoreboard's top-level "gameDate" is the correct Eastern date (YYYY-MM-DD)
+    scoreboard_date = scoreboard.get("gameDate", "")
 
     # GameHeader-like DataFrame
     game_rows = []
@@ -168,7 +200,7 @@ def _cdn_scoreboard_to_dataframes(data):
             "GAME_STATUS_TEXT": g.get("gameStatusText", ""),
             "HOME_TEAM_ID": ht.get("teamId"),
             "VISITOR_TEAM_ID": at.get("teamId"),
-            "GAME_DATE_EST": g.get("gameTimeUTC", "")[:10],
+            "GAME_DATE_EST": scoreboard_date or _utc_to_eastern_date(g.get("gameTimeUTC", "")),
         })
     game_header = pd.DataFrame(game_rows)
 
@@ -194,7 +226,7 @@ def _cdn_boxscore_to_player_rows(game_id, data):
     Returns a list of dicts (one per player).
     """
     game = data.get("game", {})
-    game_date = game.get("gameTimeUTC", "")[:10]
+    game_date = _utc_to_eastern_date(game.get("gameTimeUTC", ""))
     home_team = game.get("homeTeam", {})
     away_team = game.get("awayTeam", {})
 
@@ -443,7 +475,7 @@ def _cdn_game_finder_fallback(date_from=None, date_to=None):
             url = CDN_BOXSCORE_URL.format(game_id=gid)
             data = _cdn_get(url)
             game = data.get("game", {})
-            game_date = game.get("gameTimeUTC", "")[:10]
+            game_date = _utc_to_eastern_date(game.get("gameTimeUTC", ""))
 
             for team_key, is_home in [("homeTeam", True), ("awayTeam", False)]:
                 t = game.get(team_key, {})

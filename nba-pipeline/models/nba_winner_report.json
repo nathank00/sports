@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-02-20T16:58:11.844530+00:00",
+  "generated_at": "2026-02-21T01:49:38.435190+00:00",
   "model_file": "nba_winner.json",
   "xgboost_params": {
     "objective": "binary:logistic",
@@ -88,7 +88,7 @@
     ]
   },
   "performance": {
-    "roc_auc": 0.7078,
+    "roc_auc": 0.708,
     "accuracy": 0.6449,
     "log_loss": 0.64,
     "confusion_matrix": {
@@ -122,7 +122,7 @@
       "season_id": 2025,
       "games": 890,
       "accuracy": 0.6135,
-      "roc_auc": 0.6823,
+      "roc_auc": 0.6826,
       "home_win_rate": 0.5404
     }
   },
