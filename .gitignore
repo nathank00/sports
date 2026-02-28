@@ -18,3 +18,4 @@ desktop/dist
 *.rsls
 *.rslsc
 .sync
+*.sync
