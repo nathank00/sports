@@ -22,6 +22,12 @@ export default function Home() {
         >
           MLB
         </Link>
+        <Link
+          href="/terminal"
+          className="rounded-lg border border-neutral-700 bg-neutral-900 px-10 py-5 text-lg font-semibold text-white transition-all hover:border-neutral-500 hover:bg-neutral-800"
+        >
+          Terminal
+        </Link>
       </div>
     </div>
   );
