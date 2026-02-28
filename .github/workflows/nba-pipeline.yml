@@ -3,10 +3,12 @@
 # ─────────────────────────────────────────────────────────────
 # Two scheduled jobs:
 #
-#   1. current  — runs "current" mode 3x daily:
-#                   9:00 AM ET  (14:00 UTC) — morning refresh
-#                   12:15 PM ET (17:15 UTC) — midday update
-#                   1:00 PM ET  (18:00 UTC) — pre-tip predictions
+#   1. current  — runs "current" mode 2x daily:
+#                   11:00 AM ET / 8:00 AM PT  (16:00 UTC) — early attempt
+#                   12:30 PM ET / 9:30 AM PT  (17:30 UTC) — catch late data
+#
+#                   No runs after 1 PM ET (10 AM PT) to avoid overwriting
+#                   pregame predictions with live/final game data.
 #
 #   2. historical — manual-only, full rebuild from scratch
 #
@@ -18,12 +20,10 @@ name: NBA Pipeline
 
 on:
   schedule:
-    # 9:00 AM ET (14:00 UTC)
-    - cron: "0 14 * * *"
-    # 12:15 PM ET (17:15 UTC)
-    - cron: "15 17 * * *"
-    # 1:00 PM ET (18:00 UTC)
-    - cron: "0 18 * * *"
+    # 11:00 AM ET / 8:00 AM PT (16:00 UTC) — early attempt
+    - cron: "0 16 * * *"
+    # 12:30 PM ET / 9:30 AM PT (17:30 UTC) — catch games NBA posts late
+    - cron: "30 17 * * *"
 
   # Allow manual trigger from the Actions tab
   workflow_dispatch:

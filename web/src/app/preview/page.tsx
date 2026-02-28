@@ -1,7 +1,7 @@
 import Link from "next/link";
 import ParticleMesh from "@/components/ParticleMesh";
 
-export default function Home() {
+export default function HomepagePreview() {
   return (
     <div
       className="relative -mt-8"

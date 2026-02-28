@@ -9,7 +9,7 @@ type Tab = "dashboard" | "manual" | "settings";
 
 const tabs: { id: Tab; label: string }[] = [
   { id: "dashboard", label: "Dashboard" },
-  { id: "manual", label: "Manual" },
+  { id: "manual", label: "Trade" },
   { id: "settings", label: "Settings" },
 ];
 

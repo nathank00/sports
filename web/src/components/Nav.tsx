@@ -7,8 +7,7 @@ import { createClient } from "@/lib/supabase";
 import type { User } from "@supabase/supabase-js";
 
 const links = [
-  { href: "/nba", label: "NBA" },
-  { href: "/mlb", label: "MLB" },
+  { href: "/signals", label: "Signals" },
   { href: "/terminal", label: "Terminal" },
 ];
 
