@@ -1,14 +1,37 @@
 "use client";
 
 import { useState } from "react";
+import type { Product } from "@/lib/subscription";
 
 interface PaywallProps {
   userEmail: string;
+  product?: Product;
 }
 
-export default function Paywall({ userEmail }: PaywallProps) {
+const PRODUCT_INFO: Record<
+  Product,
+  { title: string; description: string }
+> = {
+  terminal: {
+    title: "Terminal Access",
+    description:
+      "Subscribe to access the ONE OF ONE trading terminal. Connect your Kalshi account, view model predictions matched to live markets, and place bets with calculated edge.",
+  },
+  autopilot: {
+    title: "Autopilot Access",
+    description:
+      "Subscribe to access ONE OF ONE Autopilot. Live in-game win probability powered by a 19-feature logistic regression model, real-time Kalshi market matching, and autonomous trade execution.",
+  },
+};
+
+export default function Paywall({
+  userEmail,
+  product = "terminal",
+}: PaywallProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const info = PRODUCT_INFO[product];
 
   const handleSubscribe = async () => {
     setLoading(true);
@@ -17,6 +40,8 @@ export default function Paywall({ userEmail }: PaywallProps) {
     try {
       const resp = await fetch("/api/stripe/checkout", {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ product }),
       });
 
       const data = await resp.json();
@@ -55,13 +80,9 @@ export default function Paywall({ userEmail }: PaywallProps) {
             </svg>
           </div>
           <h1 className="font-mono text-xl font-bold tracking-wider text-white mb-2">
-            Terminal Access
+            {info.title}
           </h1>
-          <p className="text-sm text-neutral-400">
-            Subscribe to access the ONE OF ONE trading terminal. Connect your
-            Kalshi account, view model predictions matched to live markets, and
-            place bets with calculated edge.
-          </p>
+          <p className="text-sm text-neutral-400">{info.description}</p>
         </div>
 
         <div className="border-t border-neutral-800 pt-4 mt-4">

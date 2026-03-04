@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase";
 import type { User } from "@supabase/supabase-js";
@@ -9,11 +9,11 @@ import type { User } from "@supabase/supabase-js";
 const links = [
   { href: "/signals", label: "Signals" },
   { href: "/terminal", label: "Terminal" },
+  { href: "/autopilot", label: "Autopilot" },
 ];
 
 export default function Nav() {
   const pathname = usePathname();
-  const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
 
   useEffect(() => {
@@ -31,14 +31,6 @@ export default function Nav() {
 
     return () => subscription.unsubscribe();
   }, []);
-
-  const handleSignOut = async () => {
-    const supabase = createClient();
-    await supabase.auth.signOut();
-    setUser(null);
-    router.push("/");
-    router.refresh();
-  };
 
   return (
     <nav className="border-b border-neutral-800 bg-neutral-950/80 backdrop-blur-sm sticky top-0 z-50">
@@ -66,12 +58,13 @@ export default function Nav() {
 
           {/* Auth state */}
           {user ? (
-            <button
-              onClick={handleSignOut}
-              className="text-xs text-neutral-500 hover:text-neutral-300 transition-colors"
+            <Link
+              href="/profile"
+              className="flex h-7 w-7 items-center justify-center rounded-full bg-neutral-800 text-xs font-medium uppercase text-neutral-300 transition-colors hover:bg-neutral-700 hover:text-white"
+              title="Profile"
             >
-              Sign Out
-            </button>
+              {(user.email ?? "?")[0]}
+            </Link>
           ) : (
             <Link
               href="/login"

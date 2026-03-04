@@ -1,0 +1,48 @@
+create table public.autopilot_training_snapshots (
+  id bigint generated always as identity primary key,
+  created_at timestamp with time zone not null default now(),
+
+  -- Game identification
+  game_id text not null,
+  season integer not null,
+  game_date date not null,
+
+  -- Teams (3-letter abbreviations)
+  home_team text not null,
+  away_team text not null,
+
+  -- Game state at this snapshot
+  period integer not null,
+  seconds_remaining real not null,
+  home_score integer not null,
+  away_score integer not null,
+  score_margin integer not null,
+  home_has_possession boolean null,
+
+  -- Pre-game context
+  pregame_spread real null,
+  pregame_home_ml_prob real null,
+
+  -- Computed features
+  home_off_rating real null,
+  away_off_rating real null,
+  home_def_rating real null,
+  away_def_rating real null,
+  pace real null,
+  home_possessions integer null,
+  away_possessions integer null,
+  home_timeouts integer null,
+  away_timeouts integer null,
+  home_team_fouls integer null,
+  away_team_fouls integer null,
+
+  -- Outcome (label for training)
+  home_win boolean not null,
+
+  -- Dedup
+  constraint unique_snapshot unique (game_id, period, seconds_remaining)
+);
+
+create index idx_snapshots_game_id on public.autopilot_training_snapshots (game_id);
+create index idx_snapshots_season on public.autopilot_training_snapshots (season);
+create index idx_snapshots_game_date on public.autopilot_training_snapshots (game_date);

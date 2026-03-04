@@ -56,6 +56,9 @@ export async function POST(request: Request) {
         break;
       }
 
+      // Read product from session metadata (defaults to "terminal" for backward compatibility)
+      const product = (session.metadata?.product as string) || "terminal";
+
       // Retrieve the full subscription with items expanded
       const subscription = await stripe.subscriptions.retrieve(
         session.subscription as string,
@@ -65,16 +68,19 @@ export async function POST(request: Request) {
       await supabase.from("subscriptions").upsert(
         {
           user_id: userId,
+          product_id: product,
           stripe_customer_id: session.customer as string,
           stripe_subscription_id: session.subscription as string,
           status: subscription.status,
           current_period_end: getPeriodEnd(subscription),
           updated_at: new Date().toISOString(),
         },
-        { onConflict: "user_id" }
+        { onConflict: "user_id,product_id" }
       );
 
-      console.log(`Subscription created for user ${userId}`);
+      console.log(
+        `Subscription created for user ${userId} (product: ${product})`
+      );
       break;
     }
 

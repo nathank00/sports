@@ -125,21 +125,27 @@ export default function Home() {
               <span className="font-mono text-xs tracking-[0.2em] text-neutral-700">
                 03
               </span>
-              <span className="rounded-full border border-neutral-800/50 bg-neutral-900/40 px-3 py-1 font-mono text-[10px] uppercase tracking-widest text-neutral-700">
-                Coming Soon
+              <span className="rounded-full border border-neutral-700/50 bg-neutral-800/30 px-3 py-1 font-mono text-[10px] uppercase tracking-widest text-neutral-400">
+                Subscription
               </span>
             </div>
             <h3 className="mb-3 text-lg font-semibold text-white">
               Autopilot
             </h3>
             <p className="mb-8 text-sm leading-relaxed text-neutral-500">
-              Autonomous arbitrage detection. Real-time market scanning with
-              algorithmic execution — set the parameters and let the system
-              work.
+              Live in-game win probability on 19 features. Real-time Kalshi
+              market matching with autonomous edge detection and trade
+              execution.
             </p>
-            <span className="inline-flex items-center gap-1.5 text-sm text-neutral-700">
-              Join waitlist →
-            </span>
+            <Link
+              href="/autopilot"
+              className="group/link inline-flex items-center gap-1.5 text-sm text-neutral-400 transition-colors hover:text-white"
+            >
+              Open autopilot
+              <span className="transition-transform group-hover/link:translate-x-0.5">
+                →
+              </span>
+            </Link>
           </div>
         </div>
       </section>

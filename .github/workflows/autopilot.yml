@@ -1,0 +1,95 @@
+# ─────────────────────────────────────────────────────────────
+# Autopilot — GitHub Actions
+# ─────────────────────────────────────────────────────────────
+# Long-running live prediction loop for NBA games.
+#
+# Scheduled triggers:
+#   1. 6:30 PM ET (23:30 UTC) — covers evening games
+#   2. 12:00 PM ET (17:00 UTC) — covers afternoon games
+#
+# The loop auto-terminates after 15 min with no active games.
+# timeout-minutes: 360 (6 hours) allows it to run for a full
+# slate of games.
+#
+# To ENABLE:  Go to Actions tab → "Autopilot" → Enable workflow
+# To DISABLE: Go to Actions tab → "Autopilot" → "..." → Disable workflow
+# ─────────────────────────────────────────────────────────────
+
+name: Autopilot
+
+on:
+  schedule:
+    # 12:00 PM ET (17:00 UTC) — afternoon games
+    - cron: "0 17 * * *"
+    # 6:30 PM ET (23:30 UTC) — evening games
+    - cron: "30 23 * * *"
+
+  # Allow manual trigger from the Actions tab
+  workflow_dispatch:
+    inputs:
+      min_edge:
+        description: "Minimum edge % to recommend trades"
+        required: false
+        default: "8"
+        type: string
+      min_time:
+        description: "Minimum seconds remaining to recommend trades"
+        required: false
+        default: "120"
+        type: string
+
+# Only one autopilot run at a time (cancel older if new one starts)
+concurrency:
+  group: autopilot
+  cancel-in-progress: true
+
+jobs:
+  # ─── Scheduled Live Loop ─────────────────────────────────────
+  live:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: autopilot/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r autopilot/requirements.txt
+
+      - name: Run autopilot live loop
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: python autopilot/run_live.py
+
+  # ─── Manual Trigger ─────────────────────────────────────────
+  manual:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: autopilot/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r autopilot/requirements.txt
+
+      - name: Run autopilot live loop
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: python autopilot/run_live.py --min-edge ${{ inputs.min_edge }} --min-time ${{ inputs.min_time }}

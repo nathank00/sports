@@ -1,0 +1,480 @@
+"use client";
+
+import { useEffect, useState, useRef, useCallback } from "react";
+import { supabase } from "@/lib/supabase";
+import { placeOrder, fetchNbaMarkets } from "@/lib/kalshi-api";
+import { hasKalshiKeys } from "@/lib/kalshi-crypto";
+import AutopilotGameCard from "./AutopilotGameCard";
+import type {
+  AutopilotSignal,
+  AutopilotGame,
+  AutopilotExecution,
+  AutopilotSettings,
+} from "@/lib/types";
+
+const DEFAULT_SETTINGS: AutopilotSettings = {
+  autoExecuteEnabled: false,
+  edgeThreshold: 8.0,
+  sizingMode: "dollars",
+  betAmount: 10,
+  cooldownSeconds: 60,
+  maxContractsPerGame: 20,
+};
+
+function loadSettings(): AutopilotSettings {
+  if (typeof window === "undefined") return DEFAULT_SETTINGS;
+  try {
+    const raw = localStorage.getItem("autopilot-settings");
+    if (!raw) return DEFAULT_SETTINGS;
+    return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+  } catch {
+    return DEFAULT_SETTINGS;
+  }
+}
+
+function saveSettings(settings: AutopilotSettings) {
+  localStorage.setItem("autopilot-settings", JSON.stringify(settings));
+}
+
+function computeContractCount(
+  settings: AutopilotSettings,
+  price: number
+): number {
+  if (settings.sizingMode === "contracts") {
+    return Math.min(settings.betAmount, settings.maxContractsPerGame);
+  }
+  // dollars mode: betAmount / price
+  if (price <= 0 || price >= 1) return 1;
+  const count = Math.floor(settings.betAmount / price);
+  return Math.min(Math.max(count, 1), settings.maxContractsPerGame);
+}
+
+export default function AutopilotDashboard() {
+  const [games, setGames] = useState<Map<string, AutopilotGame>>(new Map());
+  const [settings, setSettings] = useState<AutopilotSettings>(DEFAULT_SETTINGS);
+  const [keysConfigured, setKeysConfigured] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [systemStatus, setSystemStatus] = useState<"live" | "idle" | "unknown">(
+    "unknown"
+  );
+  const [showSettings, setShowSettings] = useState(false);
+
+  // Track cooldowns per game for auto-execution
+  const lastExecutionTime = useRef<Map<string, number>>(new Map());
+  // Track executions per game
+  const [executions, setExecutions] = useState<Map<string, AutopilotExecution[]>>(
+    new Map()
+  );
+
+  // Load settings on mount
+  useEffect(() => {
+    setSettings(loadSettings());
+    hasKalshiKeys().then(setKeysConfigured);
+  }, []);
+
+  // Fetch initial signals + subscribe to real-time updates
+  useEffect(() => {
+    fetchInitialSignals();
+
+    const channel = supabase
+      .channel("autopilot-signals")
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "autopilot_signals",
+        },
+        (payload) => {
+          const signal = payload.new as AutopilotSignal;
+          handleNewSignal(signal);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  const fetchInitialSignals = async () => {
+    setLoading(true);
+    try {
+      // Fetch today's signals
+      const today = new Date().toISOString().split("T")[0];
+      const { data, error } = await supabase
+        .from("autopilot_signals")
+        .select("*")
+        .gte("created_at", `${today}T00:00:00Z`)
+        .order("created_at", { ascending: false })
+        .limit(500);
+
+      if (error) {
+        console.error("Failed to fetch signals:", error);
+        setLoading(false);
+        return;
+      }
+
+      if (data && data.length > 0) {
+        const grouped = groupSignalsByGame(data as AutopilotSignal[]);
+        setGames(grouped);
+        setSystemStatus("live");
+      } else {
+        setSystemStatus("idle");
+      }
+    } catch (e) {
+      console.error("Failed to fetch signals:", e);
+    }
+    setLoading(false);
+  };
+
+  const handleNewSignal = useCallback(
+    (signal: AutopilotSignal) => {
+      setGames((prev) => {
+        const next = new Map(prev);
+        const existing = next.get(signal.game_id);
+
+        if (existing) {
+          next.set(signal.game_id, {
+            ...existing,
+            latestSignal: signal,
+            signals: [signal, ...existing.signals].slice(0, 100),
+          });
+        } else {
+          next.set(signal.game_id, {
+            gameId: signal.game_id,
+            homeTeam: signal.home_team,
+            awayTeam: signal.away_team,
+            latestSignal: signal,
+            signals: [signal],
+            trades: [],
+          });
+        }
+
+        return next;
+      });
+
+      setSystemStatus("live");
+
+      // Auto-execution check
+      maybeAutoExecute(signal);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [settings, keysConfigured]
+  );
+
+  const maybeAutoExecute = async (signal: AutopilotSignal) => {
+    const currentSettings = loadSettings();
+
+    if (!currentSettings.autoExecuteEnabled) return;
+    if (!keysConfigured) return;
+    if (signal.recommended_action === "NO_TRADE") return;
+    if (!signal.recommended_ticker) return;
+
+    // Check edge threshold
+    const edge = signal.edge_vs_kalshi ?? 0;
+    if (edge < currentSettings.edgeThreshold) return;
+
+    // Check cooldown
+    const now = Date.now();
+    const lastExec = lastExecutionTime.current.get(signal.game_id) ?? 0;
+    if (now - lastExec < currentSettings.cooldownSeconds * 1000) return;
+
+    // Determine price and contracts
+    const price =
+      signal.recommended_action === "BUY_HOME"
+        ? signal.kalshi_home_price
+        : signal.kalshi_away_price;
+
+    if (!price || price <= 0 || price >= 1) return;
+
+    const contracts = computeContractCount(currentSettings, price);
+
+    // Execute
+    try {
+      const result = await placeOrder(
+        signal.recommended_ticker,
+        "yes",
+        contracts,
+        price.toFixed(2)
+      );
+
+      lastExecutionTime.current.set(signal.game_id, now);
+
+      const execution: AutopilotExecution = {
+        signalId: signal.id,
+        timestamp: new Date().toISOString(),
+        ticker: signal.recommended_ticker,
+        side: "yes",
+        contracts,
+        price,
+        orderId: result.orderId,
+        status: result.status,
+        fillCount: result.fillCount,
+      };
+
+      setExecutions((prev) => {
+        const next = new Map(prev);
+        const existing = next.get(signal.game_id) ?? [];
+        next.set(signal.game_id, [execution, ...existing]);
+        return next;
+      });
+
+      // Update the game's trades list
+      setGames((prev) => {
+        const next = new Map(prev);
+        const game = next.get(signal.game_id);
+        if (game) {
+          next.set(signal.game_id, {
+            ...game,
+            trades: [execution, ...game.trades],
+          });
+        }
+        return next;
+      });
+    } catch (e) {
+      console.error("Auto-execution failed:", e);
+    }
+  };
+
+  const updateSettings = (patch: Partial<AutopilotSettings>) => {
+    setSettings((prev) => {
+      const next = { ...prev, ...patch };
+      saveSettings(next);
+      return next;
+    });
+  };
+
+  const gameList = Array.from(games.values()).sort((a, b) => {
+    // Active games first (by most recent signal)
+    return (
+      new Date(b.latestSignal.created_at).getTime() -
+      new Date(a.latestSignal.created_at).getTime()
+    );
+  });
+
+  return (
+    <div className="min-h-screen bg-black text-white p-4 md:p-6 font-mono">
+      {/* Header */}
+      <div className="max-w-6xl mx-auto mb-6">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h1 className="text-xl font-bold tracking-wider">AUTOPILOT</h1>
+            <p className="text-xs text-neutral-500 mt-1">
+              Live win probability model + automated trading signals
+            </p>
+          </div>
+
+          <div className="flex items-center gap-3">
+            {/* System status */}
+            <div className="flex items-center gap-2 text-xs">
+              <div
+                className={`w-2 h-2 rounded-full ${
+                  systemStatus === "live"
+                    ? "bg-green-500 animate-pulse"
+                    : systemStatus === "idle"
+                      ? "bg-neutral-600"
+                      : "bg-yellow-500"
+                }`}
+              />
+              <span className="text-neutral-400 uppercase">
+                {systemStatus}
+              </span>
+            </div>
+
+            {/* Settings toggle */}
+            <button
+              onClick={() => setShowSettings(!showSettings)}
+              className="text-xs text-neutral-500 hover:text-neutral-300 border border-neutral-800 rounded px-2 py-1"
+            >
+              Settings
+            </button>
+          </div>
+        </div>
+
+        {/* Auto-execution toggle */}
+        <div className="flex items-center gap-4 p-3 rounded-lg border border-neutral-800 bg-neutral-900/60">
+          <button
+            onClick={() =>
+              updateSettings({
+                autoExecuteEnabled: !settings.autoExecuteEnabled,
+              })
+            }
+            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+              settings.autoExecuteEnabled ? "bg-green-600" : "bg-neutral-700"
+            }`}
+          >
+            <span
+              className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                settings.autoExecuteEnabled
+                  ? "translate-x-6"
+                  : "translate-x-1"
+              }`}
+            />
+          </button>
+          <div>
+            <span className="text-sm font-medium">
+              Auto-Execute:{" "}
+              <span
+                className={
+                  settings.autoExecuteEnabled
+                    ? "text-green-400"
+                    : "text-neutral-500"
+                }
+              >
+                {settings.autoExecuteEnabled ? "ON" : "OFF"}
+              </span>
+            </span>
+            <p className="text-xs text-neutral-500 mt-0.5">
+              {settings.autoExecuteEnabled
+                ? keysConfigured
+                  ? `Placing bets when edge > ${settings.edgeThreshold}%`
+                  : "Kalshi keys not configured — go to Terminal > Settings"
+                : "Signals display only — no bets placed"}
+            </p>
+          </div>
+        </div>
+
+        {/* Settings panel */}
+        {showSettings && (
+          <div className="mt-3 p-4 rounded-lg border border-neutral-800 bg-neutral-900/60">
+            <h3 className="text-sm font-medium mb-3">Execution Settings</h3>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-xs">
+              <div>
+                <label className="text-neutral-500 block mb-1">
+                  Min Edge (%)
+                </label>
+                <input
+                  type="number"
+                  value={settings.edgeThreshold}
+                  onChange={(e) =>
+                    updateSettings({ edgeThreshold: Number(e.target.value) })
+                  }
+                  className="w-full bg-neutral-800 border border-neutral-700 rounded px-2 py-1 text-white"
+                  step="0.5"
+                  min="0"
+                />
+              </div>
+              <div>
+                <label className="text-neutral-500 block mb-1">
+                  Bet Amount ($)
+                </label>
+                <input
+                  type="number"
+                  value={settings.betAmount}
+                  onChange={(e) =>
+                    updateSettings({ betAmount: Number(e.target.value) })
+                  }
+                  className="w-full bg-neutral-800 border border-neutral-700 rounded px-2 py-1 text-white"
+                  min="1"
+                />
+              </div>
+              <div>
+                <label className="text-neutral-500 block mb-1">
+                  Cooldown (sec)
+                </label>
+                <input
+                  type="number"
+                  value={settings.cooldownSeconds}
+                  onChange={(e) =>
+                    updateSettings({
+                      cooldownSeconds: Number(e.target.value),
+                    })
+                  }
+                  className="w-full bg-neutral-800 border border-neutral-700 rounded px-2 py-1 text-white"
+                  min="10"
+                />
+              </div>
+              <div>
+                <label className="text-neutral-500 block mb-1">
+                  Max Contracts / Game
+                </label>
+                <input
+                  type="number"
+                  value={settings.maxContractsPerGame}
+                  onChange={(e) =>
+                    updateSettings({
+                      maxContractsPerGame: Number(e.target.value),
+                    })
+                  }
+                  className="w-full bg-neutral-800 border border-neutral-700 rounded px-2 py-1 text-white"
+                  min="1"
+                />
+              </div>
+              <div>
+                <label className="text-neutral-500 block mb-1">
+                  Sizing Mode
+                </label>
+                <select
+                  value={settings.sizingMode}
+                  onChange={(e) =>
+                    updateSettings({
+                      sizingMode: e.target.value as "contracts" | "dollars",
+                    })
+                  }
+                  className="w-full bg-neutral-800 border border-neutral-700 rounded px-2 py-1 text-white"
+                >
+                  <option value="dollars">Dollars</option>
+                  <option value="contracts">Contracts</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Game cards */}
+      <div className="max-w-6xl mx-auto">
+        {loading ? (
+          <div className="text-center py-20 text-neutral-500 text-sm">
+            Loading autopilot signals...
+          </div>
+        ) : gameList.length === 0 ? (
+          <div className="text-center py-20">
+            <p className="text-neutral-500 text-sm">
+              No active games right now.
+            </p>
+            <p className="text-neutral-600 text-xs mt-2">
+              Signals will appear here when NBA games are in progress.
+            </p>
+          </div>
+        ) : (
+          <div className="grid gap-4 md:grid-cols-2">
+            {gameList.map((game) => (
+              <AutopilotGameCard
+                key={game.gameId}
+                game={game}
+                executions={executions.get(game.gameId) ?? []}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function groupSignalsByGame(
+  signals: AutopilotSignal[]
+): Map<string, AutopilotGame> {
+  const map = new Map<string, AutopilotGame>();
+
+  // signals are already ordered desc by created_at
+  for (const signal of signals) {
+    const existing = map.get(signal.game_id);
+    if (existing) {
+      existing.signals.push(signal);
+    } else {
+      map.set(signal.game_id, {
+        gameId: signal.game_id,
+        homeTeam: signal.home_team,
+        awayTeam: signal.away_team,
+        latestSignal: signal,
+        signals: [signal],
+        trades: [],
+      });
+    }
+  }
+
+  return map;
+}

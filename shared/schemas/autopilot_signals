@@ -1,0 +1,38 @@
+create table public.autopilot_signals (
+  id bigint generated always as identity primary key,
+  created_at timestamp with time zone not null default now(),
+
+  -- Game identification
+  game_id text not null,
+  home_team text not null,
+  away_team text not null,
+
+  -- Game state at signal time
+  period integer not null,
+  seconds_remaining real not null,
+  home_score integer not null,
+  away_score integer not null,
+
+  -- Model output
+  model_home_win_prob real not null,
+
+  -- Market state
+  kalshi_ticker_home text null,
+  kalshi_ticker_away text null,
+  kalshi_home_price real null,
+  kalshi_away_price real null,
+  pregame_home_ml_prob real null,
+
+  -- Edge calculation
+  edge_vs_kalshi real null,
+
+  -- Signal
+  recommended_action text not null,
+  recommended_side text null,
+  recommended_ticker text null,
+  reason text null
+);
+
+create index idx_signals_game_id on public.autopilot_signals (game_id);
+create index idx_signals_created_at on public.autopilot_signals (created_at desc);
+create index idx_signals_action on public.autopilot_signals (recommended_action);

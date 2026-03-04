@@ -1,0 +1,108 @@
+{
+  "version": "nba_winprob_v1",
+  "trained_at": "2026-03-04T06:22:00.391629+00:00",
+  "features": [
+    "score_margin",
+    "time_fraction",
+    "period",
+    "possession_indicator",
+    "pregame_spread",
+    "pregame_home_ml_prob",
+    "home_off_rating",
+    "away_off_rating",
+    "home_def_rating",
+    "away_def_rating",
+    "pace",
+    "home_possessions",
+    "away_possessions",
+    "home_timeouts",
+    "away_timeouts",
+    "home_team_fouls",
+    "away_team_fouls",
+    "margin_x_time",
+    "spread_x_time"
+  ],
+  "intercept": -0.027869,
+  "coefficients": [
+    0.25968,
+    -0.040619,
+    0.008208,
+    -0.037562,
+    -0.051954,
+    -0.02579,
+    0.002509,
+    -0.001907,
+    -0.000698,
+    0.000638,
+    -3.4e-05,
+    -0.021452,
+    0.021457,
+    0.0,
+    0.0,
+    -0.01034,
+    0.008308,
+    -0.262835,
+    -0.087917
+  ],
+  "evaluation": {
+    "test_samples": 102037,
+    "brier_score": 0.1471,
+    "log_loss": 0.4426,
+    "roc_auc": 0.8687,
+    "accuracy": 0.7777,
+    "home_win_rate_actual": 0.5472,
+    "home_win_rate_predicted": 0.5468,
+    "calibration": {
+      "0.0-0.1": {
+        "predicted_mean": 0.0373,
+        "actual_mean": 0.0269,
+        "count": 11689
+      },
+      "0.1-0.2": {
+        "predicted_mean": 0.1493,
+        "actual_mean": 0.1356,
+        "count": 8066
+      },
+      "0.2-0.3": {
+        "predicted_mean": 0.2503,
+        "actual_mean": 0.2731,
+        "count": 8357
+      },
+      "0.3-0.4": {
+        "predicted_mean": 0.3503,
+        "actual_mean": 0.3772,
+        "count": 8513
+      },
+      "0.4-0.5": {
+        "predicted_mean": 0.4491,
+        "actual_mean": 0.4567,
+        "count": 8093
+      },
+      "0.5-0.6": {
+        "predicted_mean": 0.5506,
+        "actual_mean": 0.5393,
+        "count": 8157
+      },
+      "0.6-0.7": {
+        "predicted_mean": 0.6508,
+        "actual_mean": 0.6457,
+        "count": 9325
+      },
+      "0.7-0.8": {
+        "predicted_mean": 0.7507,
+        "actual_mean": 0.7259,
+        "count": 10153
+      },
+      "0.8-0.9": {
+        "predicted_mean": 0.851,
+        "actual_mean": 0.8488,
+        "count": 11696
+      },
+      "0.9-1.0": {
+        "predicted_mean": 0.962,
+        "actual_mean": 0.9739,
+        "count": 17988
+      }
+    }
+  }
+}

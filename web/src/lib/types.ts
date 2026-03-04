@@ -115,3 +115,62 @@ export interface TerminalSettings {
   sizingMode: SizingMode;
   betAmount: number;
 }
+
+// ── Autopilot types ─────────────────────────────────────────────────────
+
+/** A prediction signal from the autopilot backend (one row in autopilot_signals). */
+export interface AutopilotSignal {
+  id: number;
+  created_at: string;
+  game_id: string;
+  home_team: string;
+  away_team: string;
+  period: number;
+  seconds_remaining: number;
+  home_score: number;
+  away_score: number;
+  model_home_win_prob: number;
+  kalshi_ticker_home: string | null;
+  kalshi_ticker_away: string | null;
+  kalshi_home_price: number | null;
+  kalshi_away_price: number | null;
+  pregame_home_ml_prob: number | null;
+  edge_vs_kalshi: number | null;
+  recommended_action: string;
+  recommended_side: string | null;
+  recommended_ticker: string | null;
+  reason: string | null;
+}
+
+/** A live game grouped from autopilot signals. */
+export interface AutopilotGame {
+  gameId: string;
+  homeTeam: string;
+  awayTeam: string;
+  latestSignal: AutopilotSignal;
+  signals: AutopilotSignal[];
+  trades: AutopilotExecution[];
+}
+
+/** A trade executed by the frontend auto-execution engine. */
+export interface AutopilotExecution {
+  signalId: number;
+  timestamp: string;
+  ticker: string;
+  side: string;
+  contracts: number;
+  price: number;
+  orderId: string | null;
+  status: string;
+  fillCount: number | null;
+}
+
+/** Autopilot settings (persisted in localStorage). */
+export interface AutopilotSettings {
+  autoExecuteEnabled: boolean;
+  edgeThreshold: number;
+  sizingMode: SizingMode;
+  betAmount: number;
+  cooldownSeconds: number;
+  maxContractsPerGame: number;
+}

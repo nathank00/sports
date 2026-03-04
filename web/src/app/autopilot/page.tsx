@@ -2,30 +2,30 @@ import type { Metadata } from "next";
 import { createServerClient } from "@/lib/supabase-server";
 import { getSubscriptionStatus } from "@/lib/subscription";
 import { redirect } from "next/navigation";
-import Terminal from "@/components/terminal/Terminal";
+import AutopilotDashboard from "@/components/autopilot/AutopilotDashboard";
 import Paywall from "@/components/terminal/Paywall";
 
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "[ ONE OF ONE ] — Terminal",
+  title: "[ ONE OF ONE ] — Autopilot",
 };
 
-export default async function TerminalPage() {
+export default async function AutopilotPage() {
   const supabase = await createServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
 
   if (!user) {
-    redirect("/login?redirect=/terminal");
+    redirect("/login?redirect=/autopilot");
   }
 
-  const sub = await getSubscriptionStatus(supabase, user.id, "terminal");
+  const sub = await getSubscriptionStatus(supabase, user.id, "autopilot");
 
   if (!sub.active) {
-    return <Paywall userEmail={user.email ?? ""} product="terminal" />;
+    return <Paywall userEmail={user.email ?? ""} product="autopilot" />;
   }
 
-  return <Terminal />;
+  return <AutopilotDashboard />;
 }

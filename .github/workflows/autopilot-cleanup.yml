@@ -1,0 +1,52 @@
+# ─────────────────────────────────────────────────────────────
+# Autopilot Cleanup — GitHub Actions
+# ─────────────────────────────────────────────────────────────
+# Daily morning job that:
+#   1. Converts yesterday's live signals into training snapshots
+#   2. Purges old signals so the table only holds today's data
+#
+# Schedule: 10:00 AM ET (15:00 UTC) — well after games finish,
+# before the afternoon live loop starts.
+# ─────────────────────────────────────────────────────────────
+
+name: Autopilot Cleanup
+
+on:
+  schedule:
+    # 10:00 AM ET (15:00 UTC)
+    - cron: "0 15 * * *"
+
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Target date (YYYY-MM-DD). Defaults to yesterday."
+        required: false
+        type: string
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: autopilot/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r autopilot/requirements.txt
+
+      - name: Run cleanup
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          if [ -n "${{ inputs.date }}" ]; then
+            python autopilot/run_cleanup.py --date "${{ inputs.date }}"
+          else
+            python autopilot/run_cleanup.py
+          fi

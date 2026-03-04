@@ -7,10 +7,13 @@ export async function middleware(request: NextRequest) {
   // Only run auth logic on matched routes
   const needsAuth =
     pathname.startsWith("/terminal") ||
+    pathname.startsWith("/autopilot") ||
+    pathname.startsWith("/profile") ||
     pathname === "/login" ||
     pathname.startsWith("/auth/") ||
     pathname.startsWith("/api/kalshi/") ||
-    pathname === "/api/stripe/checkout";
+    pathname === "/api/stripe/checkout" ||
+    pathname === "/api/stripe/portal";
 
   if (!needsAuth) {
     return NextResponse.next();
@@ -45,8 +48,13 @@ export async function middleware(request: NextRequest) {
       data: { user },
     } = await supabase.auth.getUser();
 
-    // Protect /terminal — redirect to login if unauthenticated
-    if (pathname.startsWith("/terminal") && !user) {
+    // Protect /terminal, /autopilot, /profile — redirect to login if unauthenticated
+    if (
+      (pathname.startsWith("/terminal") ||
+        pathname.startsWith("/autopilot") ||
+        pathname.startsWith("/profile")) &&
+      !user
+    ) {
       const loginUrl = new URL("/login", request.url);
       loginUrl.searchParams.set("redirect", pathname);
       return NextResponse.redirect(loginUrl);
