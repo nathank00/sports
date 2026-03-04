@@ -36,6 +36,52 @@ function saveSettings(settings: AutopilotSettings) {
   localStorage.setItem("autopilot-settings", JSON.stringify(settings));
 }
 
+/**
+ * Compute the NBA "game day" cutoff in UTC.
+ *
+ * NBA game days run ~11 AM ET to ~2 AM ET the next morning, so we treat
+ * 5 AM ET as the boundary. Everything from 5 AM ET today until 5 AM ET
+ * tomorrow belongs to today's game slate.
+ *
+ * If the current ET hour is before 5 AM (watching a late west-coast game),
+ * we roll back to yesterday's game day so those games stay visible.
+ */
+function getGameDayCutoffUTC(): string {
+  const now = new Date();
+
+  // Extract current date/time components in Eastern Time
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    hour12: false,
+  }).formatToParts(now);
+
+  const etYear = parseInt(parts.find((p) => p.type === "year")!.value);
+  const etMonth = parseInt(parts.find((p) => p.type === "month")!.value) - 1;
+  const etDay = parseInt(parts.find((p) => p.type === "day")!.value);
+  const etHour = parseInt(parts.find((p) => p.type === "hour")!.value);
+
+  // Roll back a day if before 5 AM ET (still previous game day)
+  const gameDay = new Date(etYear, etMonth, etDay);
+  if (etHour < 5) {
+    gameDay.setDate(gameDay.getDate() - 1);
+  }
+
+  const yyyy = gameDay.getFullYear();
+  const mm = String(gameDay.getMonth() + 1).padStart(2, "0");
+  const dd = String(gameDay.getDate()).padStart(2, "0");
+
+  // Compute ET → UTC offset dynamically (handles EST/EDT automatically)
+  const utcHour = now.getUTCHours();
+  const etOffsetHours = ((utcHour - etHour + 24) % 24); // 5 for EST, 4 for EDT
+  const cutoffUTCHour = 5 + etOffsetHours; // 5 AM ET → 10:00 UTC (EST) or 09:00 UTC (EDT)
+
+  return `${yyyy}-${mm}-${dd}T${String(cutoffUTCHour).padStart(2, "0")}:00:00Z`;
+}
+
 function computeContractCount(
   settings: AutopilotSettings,
   price: number
@@ -100,12 +146,12 @@ export default function AutopilotDashboard() {
   const fetchInitialSignals = async () => {
     setLoading(true);
     try {
-      // Fetch today's signals
-      const today = new Date().toISOString().split("T")[0];
+      // Fetch signals for the current NBA game day (5 AM ET boundary)
+      const cutoff = getGameDayCutoffUTC();
       const { data, error } = await supabase
         .from("autopilot_signals")
         .select("*")
-        .gte("created_at", `${today}T00:00:00Z`)
+        .gte("created_at", cutoff)
         .order("created_at", { ascending: false })
         .limit(500);
 

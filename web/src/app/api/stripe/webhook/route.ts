@@ -65,18 +65,31 @@ export async function POST(request: Request) {
         { expand: ["items.data"] }
       );
 
-      await supabase.from("subscriptions").upsert(
-        {
-          user_id: userId,
-          product_id: product,
-          stripe_customer_id: session.customer as string,
-          stripe_subscription_id: session.subscription as string,
-          status: subscription.status,
-          current_period_end: getPeriodEnd(subscription),
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "user_id,product_id" }
-      );
+      const { error: upsertError } = await supabase
+        .from("subscriptions")
+        .upsert(
+          {
+            user_id: userId,
+            product_id: product,
+            stripe_customer_id: session.customer as string,
+            stripe_subscription_id: session.subscription as string,
+            status: subscription.status,
+            current_period_end: getPeriodEnd(subscription),
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "user_id,product_id" }
+        );
+
+      if (upsertError) {
+        console.error(
+          `Failed to upsert subscription for user ${userId} (product: ${product}):`,
+          upsertError
+        );
+        return Response.json(
+          { error: "Database write failed", detail: upsertError.message },
+          { status: 500 }
+        );
+      }
 
       console.log(
         `Subscription created for user ${userId} (product: ${product})`
@@ -87,7 +100,7 @@ export async function POST(request: Request) {
     case "customer.subscription.updated": {
       const subscription = event.data.object as Stripe.Subscription;
 
-      await supabase
+      const { error: updateError } = await supabase
         .from("subscriptions")
         .update({
           status: subscription.status,
@@ -95,6 +108,17 @@ export async function POST(request: Request) {
           updated_at: new Date().toISOString(),
         })
         .eq("stripe_subscription_id", subscription.id);
+
+      if (updateError) {
+        console.error(
+          `Failed to update subscription ${subscription.id}:`,
+          updateError
+        );
+        return Response.json(
+          { error: "Database update failed", detail: updateError.message },
+          { status: 500 }
+        );
+      }
 
       console.log(
         `Subscription ${subscription.id} updated: ${subscription.status}`
@@ -105,13 +129,24 @@ export async function POST(request: Request) {
     case "customer.subscription.deleted": {
       const subscription = event.data.object as Stripe.Subscription;
 
-      await supabase
+      const { error: deleteError } = await supabase
         .from("subscriptions")
         .update({
           status: "canceled",
           updated_at: new Date().toISOString(),
         })
         .eq("stripe_subscription_id", subscription.id);
+
+      if (deleteError) {
+        console.error(
+          `Failed to cancel subscription ${subscription.id}:`,
+          deleteError
+        );
+        return Response.json(
+          { error: "Database update failed", detail: deleteError.message },
+          { status: 500 }
+        );
+      }
 
       console.log(`Subscription ${subscription.id} canceled`);
       break;
