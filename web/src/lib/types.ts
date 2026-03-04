@@ -142,14 +142,19 @@ export interface AutopilotSignal {
   reason: string | null;
 }
 
-/** A live game grouped from autopilot signals. */
+/** A game on today's slate — pregame, live (with model signals), or completed. */
 export interface AutopilotGame {
   gameId: string;
   homeTeam: string;
   awayTeam: string;
-  latestSignal: AutopilotSignal;
+  latestSignal: AutopilotSignal | null;
   signals: AutopilotSignal[];
-  trades: AutopilotExecution[];
+  /** Schedule info (from ESPN). */
+  startTime?: string;
+  statusDetail?: string;
+  /** Pregame Kalshi prices (from public API, before model signals arrive). */
+  kalshiHomePrice?: number | null;
+  kalshiAwayPrice?: number | null;
 }
 
 /** A trade executed by the frontend auto-execution engine. */

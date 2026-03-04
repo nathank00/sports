@@ -9,7 +9,6 @@ import AutopilotGameCard from "./AutopilotGameCard";
 import type {
   AutopilotSignal,
   AutopilotGame,
-  AutopilotExecution,
   AutopilotSettings,
   PositionItem,
 } from "@/lib/types";
@@ -107,19 +106,92 @@ function computeContractCount(
   return Math.min(Math.max(count, 1), settings.maxContractsPerBet);
 }
 
+const MONTHS = [
+  "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+  "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
+] as const;
+
 /**
- * Match Kalshi positions to a game by checking if the ticker suffix
- * matches either team's abbreviation.
+ * Get today's NBA game date as a Kalshi ticker date string (e.g., "26MAR04").
+ * Uses the 5 AM ET boundary to handle late-night games correctly.
+ */
+function getKalshiGameDateStr(): string {
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    hour12: false,
+  }).formatToParts(now);
+
+  const etYear = parseInt(parts.find((p) => p.type === "year")!.value);
+  const etMonth = parseInt(parts.find((p) => p.type === "month")!.value) - 1;
+  const etDay = parseInt(parts.find((p) => p.type === "day")!.value);
+  const etHour = parseInt(parts.find((p) => p.type === "hour")!.value);
+
+  const gameDay = new Date(etYear, etMonth, etDay);
+  if (etHour < 5) {
+    gameDay.setDate(gameDay.getDate() - 1);
+  }
+
+  const yy = String(gameDay.getFullYear()).slice(-2);
+  const mmm = MONTHS[gameDay.getMonth()];
+  const dd = String(gameDay.getDate()).padStart(2, "0");
+  return `${yy}${mmm}${dd}`;
+}
+
+/**
+ * Match Kalshi positions to a specific game.
+ *
+ * Three-layer check for robustness:
+ *   1. Ticker suffix (the YES-side team) matches one of the two teams
+ *   2. Ticker contains BOTH team abbreviations (ensures it's this exact matchup)
+ *   3. Ticker contains today's game date (prevents matching yesterday's unsettled positions)
  */
 function matchPositionsToGame(
   positions: PositionItem[],
   homeTeam: string,
   awayTeam: string
 ): PositionItem[] {
+  const gameDate = getKalshiGameDateStr();
   return positions.filter((pos) => {
     const suffix = tickerTeamSuffix(pos.ticker);
-    return suffix === homeTeam || suffix === awayTeam;
+    if (suffix !== homeTeam && suffix !== awayTeam) return false;
+    if (!pos.ticker.includes(homeTeam) || !pos.ticker.includes(awayTeam)) return false;
+    // Verify the ticker matches today's game date (e.g., "26MAR04" in "KXNBAGAME-26MAR04BOSLAL-BOS")
+    return pos.ticker.includes(gameDate);
   });
+}
+
+/**
+ * Get the user's total dollar exposure on a game from Kalshi positions.
+ * Sums absolute totalTraded across both sides (home YES + away YES).
+ */
+function getGameExposure(
+  positions: PositionItem[],
+  homeTeam: string,
+  awayTeam: string
+): number {
+  const matched = matchPositionsToGame(positions, homeTeam, awayTeam);
+  return matched.reduce((sum, pos) => sum + Math.abs(pos.totalTraded), 0);
+}
+
+/** Shape of the /api/games/today response. */
+interface ScheduledGame {
+  espnGameId: string;
+  homeTeam: string;
+  awayTeam: string;
+  homeScore: number;
+  awayScore: number;
+  status: string;
+  period: number;
+  clock: string;
+  startTime: string | null;
+  statusDetail: string;
+  kalshiHomePrice: number | null;
+  kalshiAwayPrice: number | null;
 }
 
 export default function AutopilotDashboard() {
@@ -135,12 +207,8 @@ export default function AutopilotDashboard() {
 
   // Track cooldowns per game for auto-execution
   const lastExecutionTime = useRef<Map<string, number>>(new Map());
-  // Track executions per game (ref for synchronous reads in async callbacks)
-  const executionsRef = useRef<Map<string, AutopilotExecution[]>>(new Map());
-  // Track executions per game (state for rendering)
-  const [executions, setExecutions] = useState<
-    Map<string, AutopilotExecution[]>
-  >(new Map());
+  // Ref for synchronous position reads in async callbacks (source of truth for exposure)
+  const positionsRef = useRef<PositionItem[]>([]);
 
   // Load settings on mount
   useEffect(() => {
@@ -148,20 +216,30 @@ export default function AutopilotDashboard() {
     hasKalshiKeys().then(setKeysConfigured);
   }, []);
 
-  // Fetch Kalshi positions on mount + refresh every 60s
+  // Fetch Kalshi positions on mount + refresh every 15s (used for exposure cap)
   useEffect(() => {
     if (!keysConfigured) return;
 
     const loadPositions = () => {
       fetchPositions()
-        .then(setPositions)
+        .then((pos) => {
+          setPositions(pos);
+          positionsRef.current = pos;
+        })
         .catch((e) => console.error("Failed to fetch positions:", e));
     };
 
     loadPositions();
-    const interval = setInterval(loadPositions, 60_000);
+    const interval = setInterval(loadPositions, 15_000);
     return () => clearInterval(interval);
   }, [keysConfigured]);
+
+  // Fetch today's scheduled games (ESPN + Kalshi) on mount + refresh every 60s
+  useEffect(() => {
+    fetchScheduledGames();
+    const interval = setInterval(fetchScheduledGames, 60_000);
+    return () => clearInterval(interval);
+  }, []);
 
   // Fetch initial signals + subscribe to real-time updates
   useEffect(() => {
@@ -188,6 +266,50 @@ export default function AutopilotDashboard() {
     };
   }, []);
 
+  const fetchScheduledGames = async () => {
+    try {
+      const resp = await fetch("/api/games/today");
+      if (!resp.ok) return;
+      const data = await resp.json();
+      const scheduled: ScheduledGame[] = data.games || [];
+
+      setGames((prev) => {
+        const next = new Map(prev);
+
+        for (const sg of scheduled) {
+          const existing = next.get(sg.espnGameId);
+          if (existing) {
+            // Update schedule info but preserve signal data
+            next.set(sg.espnGameId, {
+              ...existing,
+              startTime: sg.startTime ?? undefined,
+              statusDetail: sg.statusDetail || undefined,
+              kalshiHomePrice: sg.kalshiHomePrice,
+              kalshiAwayPrice: sg.kalshiAwayPrice,
+            });
+          } else {
+            // New pregame entry
+            next.set(sg.espnGameId, {
+              gameId: sg.espnGameId,
+              homeTeam: sg.homeTeam,
+              awayTeam: sg.awayTeam,
+              latestSignal: null,
+              signals: [],
+              startTime: sg.startTime ?? undefined,
+              statusDetail: sg.statusDetail || undefined,
+              kalshiHomePrice: sg.kalshiHomePrice,
+              kalshiAwayPrice: sg.kalshiAwayPrice,
+            });
+          }
+        }
+
+        return next;
+      });
+    } catch (e) {
+      console.error("Failed to fetch scheduled games:", e);
+    }
+  };
+
   const fetchInitialSignals = async () => {
     setLoading(true);
     try {
@@ -208,7 +330,24 @@ export default function AutopilotDashboard() {
 
       if (data && data.length > 0) {
         const grouped = groupSignalsByGame(data as AutopilotSignal[]);
-        setGames(grouped);
+        // Merge with existing scheduled games
+        setGames((prev) => {
+          const next = new Map(prev);
+          for (const [gameId, signalGame] of grouped) {
+            const existing = next.get(gameId);
+            if (existing) {
+              // Merge signal data into scheduled game entry
+              next.set(gameId, {
+                ...existing,
+                latestSignal: signalGame.latestSignal,
+                signals: signalGame.signals,
+              });
+            } else {
+              next.set(gameId, signalGame);
+            }
+          }
+          return next;
+        });
         setSystemStatus("live");
       } else {
         setSystemStatus("idle");
@@ -238,7 +377,6 @@ export default function AutopilotDashboard() {
             awayTeam: signal.away_team,
             latestSignal: signal,
             signals: [signal],
-            trades: [],
           });
         }
 
@@ -281,11 +419,11 @@ export default function AutopilotDashboard() {
 
     const contracts = computeContractCount(currentSettings, price);
 
-    // Check cumulative per-game exposure cap
-    const gameExecs = executionsRef.current.get(signal.game_id) ?? [];
-    const currentExposure = gameExecs.reduce(
-      (sum, exec) => sum + exec.contracts * exec.price,
-      0
+    // Check cumulative per-game exposure cap using Kalshi positions (source of truth)
+    const currentExposure = getGameExposure(
+      positionsRef.current,
+      signal.home_team,
+      signal.away_team
     );
     const newExposure = contracts * price;
     if (currentExposure + newExposure > currentSettings.maxExposurePerGame) {
@@ -307,42 +445,11 @@ export default function AutopilotDashboard() {
 
       lastExecutionTime.current.set(signal.game_id, now);
 
-      const execution: AutopilotExecution = {
-        signalId: signal.id,
-        timestamp: new Date().toISOString(),
-        ticker: signal.recommended_ticker,
-        side: "yes",
-        contracts,
-        price,
-        orderId: result.orderId,
-        status: result.status,
-        fillCount: result.fillCount,
-      };
-
-      // Update ref synchronously for accurate exposure tracking
-      const prevExecs = executionsRef.current.get(signal.game_id) ?? [];
-      executionsRef.current.set(signal.game_id, [execution, ...prevExecs]);
-
-      // Update state for rendering
-      setExecutions((prev) => {
-        const next = new Map(prev);
-        const existing = next.get(signal.game_id) ?? [];
-        next.set(signal.game_id, [execution, ...existing]);
-        return next;
-      });
-
-      // Update the game's trades list
-      setGames((prev) => {
-        const next = new Map(prev);
-        const game = next.get(signal.game_id);
-        if (game) {
-          next.set(signal.game_id, {
-            ...game,
-            trades: [execution, ...game.trades],
-          });
-        }
-        return next;
-      });
+      console.log(
+        `Trade executed: ${signal.recommended_action} ${signal.recommended_ticker} ` +
+          `x${contracts} @ ${(price * 100).toFixed(0)}c | ` +
+          `status=${result.status} fill=${result.fillCount ?? "?"}`
+      );
     } catch (e) {
       console.error("Auto-execution failed:", e);
     }
@@ -357,11 +464,25 @@ export default function AutopilotDashboard() {
   };
 
   const gameList = Array.from(games.values()).sort((a, b) => {
-    // Active games first (by most recent signal)
-    return (
-      new Date(b.latestSignal.created_at).getTime() -
-      new Date(a.latestSignal.created_at).getTime()
-    );
+    const aLive = a.latestSignal !== null;
+    const bLive = b.latestSignal !== null;
+
+    // Live games first
+    if (aLive && !bLive) return -1;
+    if (!aLive && bLive) return 1;
+
+    // Both live: sort by most recent signal
+    if (aLive && bLive) {
+      return (
+        new Date(b.latestSignal!.created_at).getTime() -
+        new Date(a.latestSignal!.created_at).getTime()
+      );
+    }
+
+    // Both pregame: sort by start time (earliest first)
+    const aTime = a.startTime ? new Date(a.startTime).getTime() : 0;
+    const bTime = b.startTime ? new Date(b.startTime).getTime() : 0;
+    return aTime - bTime;
   });
 
   return (
@@ -554,15 +675,15 @@ export default function AutopilotDashboard() {
       <div className="max-w-6xl mx-auto">
         {loading ? (
           <div className="text-center py-20 text-neutral-500 text-sm">
-            Loading autopilot signals...
+            Loading games...
           </div>
         ) : gameList.length === 0 ? (
           <div className="text-center py-20">
             <p className="text-neutral-500 text-sm">
-              No active games right now.
+              No games scheduled today.
             </p>
             <p className="text-neutral-600 text-xs mt-2">
-              Signals will appear here when NBA games are in progress.
+              Today&apos;s game slate will appear here when available.
             </p>
           </div>
         ) : (
@@ -571,7 +692,6 @@ export default function AutopilotDashboard() {
               <AutopilotGameCard
                 key={game.gameId}
                 game={game}
-                executions={executions.get(game.gameId) ?? []}
                 positions={matchPositionsToGame(
                   positions,
                   game.homeTeam,
@@ -603,7 +723,6 @@ function groupSignalsByGame(
         awayTeam: signal.away_team,
         latestSignal: signal,
         signals: [signal],
-        trades: [],
       });
     }
   }

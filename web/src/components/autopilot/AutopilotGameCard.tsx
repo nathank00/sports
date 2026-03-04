@@ -1,21 +1,15 @@
 "use client";
 
 import { useState } from "react";
-import type {
-  AutopilotGame,
-  AutopilotExecution,
-  PositionItem,
-} from "@/lib/types";
+import type { AutopilotGame, PositionItem } from "@/lib/types";
 
 interface Props {
   game: AutopilotGame;
-  executions: AutopilotExecution[];
   positions: PositionItem[];
 }
 
 function formatClock(period: number, secondsRemaining: number): string {
   if (period <= 4) {
-    // Figure out seconds within the current quarter
     const fullQuartersLeft = 4 - period;
     const clockInQuarter = secondsRemaining - fullQuartersLeft * 720;
     const mins = Math.floor(Math.max(clockInQuarter, 0) / 60);
@@ -36,13 +30,143 @@ function probBar(prob: number): string {
   return `${Math.round(prob * 100)}%`;
 }
 
-export default function AutopilotGameCard({
+/** Format an ISO start time for display (e.g., "7:30 PM"). */
+function formatStartTime(iso: string): string {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleTimeString("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      timeZone: "America/New_York",
+    });
+  } catch {
+    return "";
+  }
+}
+
+// ── Positions section (shared between pregame and live) ────────────────
+
+function PositionsSection({ positions }: { positions: PositionItem[] }) {
+  if (positions.length === 0) return null;
+
+  return (
+    <div className="text-xs mb-2 py-1.5 px-2 rounded bg-neutral-800/50 border border-neutral-800">
+      <p className="text-neutral-500 mb-1">Positions</p>
+      {positions.map((pos) => (
+        <div
+          key={pos.ticker}
+          className="flex items-center justify-between py-0.5"
+        >
+          <div className="flex items-center gap-2">
+            <span className="text-neutral-400 font-medium">
+              {pos.ticker.split("-").pop()}
+            </span>
+            <span
+              className={`font-mono font-medium ${
+                pos.exposure >= 0 ? "text-green-400" : "text-red-400"
+              }`}
+            >
+              {pos.exposure >= 0 ? "+" : ""}${pos.exposure.toFixed(2)}
+            </span>
+          </div>
+          <div className="flex items-center gap-2 text-neutral-600">
+            <span>${pos.totalTraded.toFixed(2)} traded</span>
+            {pos.restingOrders > 0 && (
+              <span>{pos.restingOrders} resting</span>
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Pregame card ───────────────────────────────────────────────────────
+
+function PregameCard({
   game,
-  executions,
   positions,
-}: Props) {
+}: {
+  game: AutopilotGame;
+  positions: PositionItem[];
+}) {
+  const homePrice = game.kalshiHomePrice;
+  const awayPrice = game.kalshiAwayPrice;
+
+  return (
+    <div className="rounded-lg border border-neutral-800 bg-neutral-900/60 p-4">
+      {/* Teams + tipoff */}
+      <div className="flex items-center justify-between mb-3">
+        <div className="text-sm">
+          <span className="text-neutral-400">{game.awayTeam}</span>
+          <span className="text-neutral-600 mx-2">@</span>
+          <span className="text-neutral-400">{game.homeTeam}</span>
+        </div>
+        <span className="text-xs text-neutral-500">
+          {game.statusDetail ||
+            (game.startTime ? formatStartTime(game.startTime) : "Scheduled")}
+        </span>
+      </div>
+
+      {/* Kalshi market prices as implied probability bar */}
+      {homePrice != null && awayPrice != null && (
+        <div className="mb-3">
+          <div className="flex justify-between text-xs text-neutral-500 mb-1">
+            <span>
+              {game.awayTeam} {probBar(awayPrice)}
+            </span>
+            <span>
+              {probBar(homePrice)} {game.homeTeam}
+            </span>
+          </div>
+          <div className="h-2 bg-neutral-800 rounded-full overflow-hidden flex">
+            <div
+              className="bg-red-500/40 transition-all duration-500"
+              style={{ width: `${awayPrice * 100}%` }}
+            />
+            <div
+              className="bg-blue-500/40 transition-all duration-500"
+              style={{ width: `${homePrice * 100}%` }}
+            />
+          </div>
+          <div className="flex gap-4 text-xs text-neutral-600 mt-1.5">
+            <span>
+              {game.awayTeam}: {(awayPrice * 100).toFixed(0)}c
+            </span>
+            <span>
+              {game.homeTeam}: {(homePrice * 100).toFixed(0)}c
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Show single-side price if only one is available */}
+      {homePrice == null && awayPrice == null && (
+        <div className="mb-3 text-xs text-neutral-600">
+          Kalshi markets not yet available
+        </div>
+      )}
+
+      <PositionsSection positions={positions} />
+
+      <div className="text-xs text-neutral-600 mt-1">
+        Model signals will appear when the game starts
+      </div>
+    </div>
+  );
+}
+
+// ── Live card ──────────────────────────────────────────────────────────
+
+function LiveCard({
+  game,
+  positions,
+}: {
+  game: AutopilotGame;
+  positions: PositionItem[];
+}) {
   const [expanded, setExpanded] = useState(false);
-  const s = game.latestSignal;
+  const s = game.latestSignal!;
 
   const homeProb = s.model_home_win_prob;
   const awayProb = 1 - homeProb;
@@ -65,7 +189,7 @@ export default function AutopilotGameCard({
         </span>
       </div>
 
-      {/* Probability bar */}
+      {/* Model probability bar */}
       <div className="mb-3">
         <div className="flex justify-between text-xs text-neutral-500 mb-1">
           <span>
@@ -129,60 +253,19 @@ export default function AutopilotGameCard({
         </div>
       )}
 
-      {/* User positions for this game */}
-      {positions.length > 0 && (
-        <div className="flex flex-wrap gap-3 text-xs mb-2 py-1.5 px-2 rounded bg-neutral-800/50 border border-neutral-800">
-          {positions.map((pos) => (
-            <div key={pos.ticker} className="flex items-center gap-1.5">
-              <span className="text-neutral-500">Position:</span>
-              <span
-                className={`font-mono font-medium ${
-                  pos.exposure >= 0 ? "text-green-400" : "text-red-400"
-                }`}
-              >
-                {pos.exposure >= 0 ? "+" : ""}${pos.exposure.toFixed(2)}
-              </span>
-              <span className="text-neutral-600 text-[10px]">
-                ({pos.ticker.split("-").pop()})
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Executions */}
-      {executions.length > 0 && (
-        <div className="mt-3 border-t border-neutral-800 pt-2">
-          <p className="text-xs text-neutral-500 mb-1">
-            Trades ({executions.length})
-          </p>
-          {executions.slice(0, 3).map((exec, i) => (
-            <div
-              key={i}
-              className="flex items-center justify-between text-xs py-0.5"
-            >
-              <span className="text-green-400">
-                BUY {exec.side.toUpperCase()} x{exec.contracts} @{" "}
-                {(exec.price * 100).toFixed(0)}c
-              </span>
-              <span className="text-neutral-600">
-                {exec.status}{" "}
-                {exec.fillCount != null && `(${exec.fillCount} filled)`}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
+      <PositionsSection positions={positions} />
 
       {/* Expand for signal history */}
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="mt-2 text-xs text-neutral-600 hover:text-neutral-400"
-      >
-        {expanded
-          ? "Hide history"
-          : `Show history (${game.signals.length} signals)`}
-      </button>
+      {game.signals.length > 0 && (
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="mt-2 text-xs text-neutral-600 hover:text-neutral-400"
+        >
+          {expanded
+            ? "Hide history"
+            : `Show history (${game.signals.length} signals)`}
+        </button>
+      )}
 
       {expanded && (
         <div className="mt-2 max-h-48 overflow-y-auto border-t border-neutral-800 pt-2">
@@ -210,4 +293,13 @@ export default function AutopilotGameCard({
       )}
     </div>
   );
+}
+
+// ── Main export ────────────────────────────────────────────────────────
+
+export default function AutopilotGameCard({ game, positions }: Props) {
+  if (game.latestSignal) {
+    return <LiveCard game={game} positions={positions} />;
+  }
+  return <PregameCard game={game} positions={positions} />;
 }
