@@ -20,7 +20,7 @@ const PRODUCT_INFO: Record<
   autopilot: {
     title: "Autopilot Access",
     description:
-      "Subscribe to access ONE OF ONE Autopilot. Live in-game win probability powered by a 19-feature logistic regression model, real-time Kalshi market matching, and autonomous trade execution.",
+      "Subscribe to access ONE OF ONE Autopilot. Live in-game win probabilities and autonomous trade execution on Kalshi.",
   },
 };
 

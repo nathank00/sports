@@ -20,7 +20,7 @@ export interface Prediction {
  * These match the suffixes on Kalshi market tickers, e.g., "-ORL", "-SAC".
  * Ported from desktop/src-tauri/src/matcher.rs
  */
-const TEAM_ABBR_MAP: Record<string, string> = {
+export const TEAM_ABBR_MAP: Record<string, string> = {
   "Atlanta Hawks": "ATL",
   "Boston Celtics": "BOS",
   "Brooklyn Nets": "BKN",
@@ -53,11 +53,16 @@ const TEAM_ABBR_MAP: Record<string, string> = {
   "Washington Wizards": "WAS",
 };
 
+/** Reverse lookup: abbreviation → full team name. */
+export const ABBR_TO_TEAM: Record<string, string> = Object.fromEntries(
+  Object.entries(TEAM_ABBR_MAP).map(([name, abbr]) => [abbr, name])
+);
+
 /**
  * Extract the team abbreviation suffix from a Kalshi ticker.
  * e.g., "KXNBAGAME-26FEB19ORLSAC-ORL" → "ORL"
  */
-function tickerTeamSuffix(ticker: string): string {
+export function tickerTeamSuffix(ticker: string): string {
   const parts = ticker.split("-");
   return parts[parts.length - 1] || "";
 }

@@ -70,6 +70,27 @@ function LoginForm() {
     setLoading(false);
   }
 
+  async function handleForgotPassword() {
+    if (!email) {
+      setError("Please enter your email address first.");
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    setMessage(null);
+
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${window.location.origin}/auth/callback?redirect=/profile`,
+    });
+
+    if (error) {
+      setError(error.message);
+    } else {
+      setMessage("Password reset link sent. Check your email.");
+    }
+    setLoading(false);
+  }
+
   return (
     <div className="flex min-h-[70vh] flex-col items-center justify-center">
       <Link
@@ -121,6 +142,18 @@ function LoginForm() {
               placeholder="••••••••"
             />
           </div>
+
+          {!isSignUp && (
+            <div className="text-right -mt-2">
+              <button
+                type="button"
+                onClick={handleForgotPassword}
+                className="text-xs text-neutral-500 hover:text-neutral-300 transition-colors"
+              >
+                Forgot password?
+              </button>
+            </div>
+          )}
 
           {error && (
             <div className="rounded-md bg-red-900/30 border border-red-800 px-3 py-2 text-sm text-red-400">

@@ -1,11 +1,16 @@
 "use client";
 
 import { useState } from "react";
-import type { AutopilotGame, AutopilotExecution } from "@/lib/types";
+import type {
+  AutopilotGame,
+  AutopilotExecution,
+  PositionItem,
+} from "@/lib/types";
 
 interface Props {
   game: AutopilotGame;
   executions: AutopilotExecution[];
+  positions: PositionItem[];
 }
 
 function formatClock(period: number, secondsRemaining: number): string {
@@ -31,13 +36,16 @@ function probBar(prob: number): string {
   return `${Math.round(prob * 100)}%`;
 }
 
-export default function AutopilotGameCard({ game, executions }: Props) {
+export default function AutopilotGameCard({
+  game,
+  executions,
+  positions,
+}: Props) {
   const [expanded, setExpanded] = useState(false);
   const s = game.latestSignal;
 
   const homeProb = s.model_home_win_prob;
   const awayProb = 1 - homeProb;
-  const homeFavored = homeProb >= 0.5;
 
   return (
     <div className="rounded-lg border border-neutral-800 bg-neutral-900/60 p-4">
@@ -118,6 +126,27 @@ export default function AutopilotGameCard({ game, executions }: Props) {
               {s.home_team} Kalshi: {(s.kalshi_home_price * 100).toFixed(0)}c
             </span>
           )}
+        </div>
+      )}
+
+      {/* User positions for this game */}
+      {positions.length > 0 && (
+        <div className="flex flex-wrap gap-3 text-xs mb-2 py-1.5 px-2 rounded bg-neutral-800/50 border border-neutral-800">
+          {positions.map((pos) => (
+            <div key={pos.ticker} className="flex items-center gap-1.5">
+              <span className="text-neutral-500">Position:</span>
+              <span
+                className={`font-mono font-medium ${
+                  pos.exposure >= 0 ? "text-green-400" : "text-red-400"
+                }`}
+              >
+                {pos.exposure >= 0 ? "+" : ""}${pos.exposure.toFixed(2)}
+              </span>
+              <span className="text-neutral-600 text-[10px]">
+                ({pos.ticker.split("-").pop()})
+              </span>
+            </div>
+          ))}
         </div>
       )}
 

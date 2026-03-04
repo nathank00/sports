@@ -49,8 +49,8 @@ ABBR_TO_TEAM: dict[str, str] = {v: k for k, v in TEAM_ABBR_MAP.items()}
 class TradingConfig:
     """Trading parameters for signal evaluation."""
 
-    min_edge_pct: float = 8.0             # minimum edge to recommend a trade (percentage points)
-    min_seconds_remaining: float = 120.0  # don't trade in final 2 minutes
+    min_edge_pct: float = 2.0             # minimum edge to recommend a trade (percentage points)
+    min_seconds_remaining: float = 120.0  # don't trade in final 2 minutes of Q4/OT
 
 
 @dataclass
@@ -111,6 +111,7 @@ def evaluate_signal(
     home_team: str,
     away_team: str,
     seconds_remaining: float,
+    period: int,
     markets: list[dict],
     config: TradingConfig | None = None,
 ) -> TradeSignal:
@@ -124,11 +125,11 @@ def evaluate_signal(
 
     model_away_prob = 1.0 - model_home_prob
 
-    # Filter: don't trade in final minutes
-    if seconds_remaining < config.min_seconds_remaining:
+    # Filter: don't trade in final minutes of Q4 or overtime
+    if period >= 4 and seconds_remaining < config.min_seconds_remaining:
         return TradeSignal(
             recommended_action="NO_TRADE",
-            reason=f"Too close to end ({seconds_remaining:.0f}s remaining)",
+            reason=f"Too close to end of {'OT' if period > 4 else 'Q4'} ({seconds_remaining:.0f}s remaining)",
         )
 
     # Find matching Kalshi markets

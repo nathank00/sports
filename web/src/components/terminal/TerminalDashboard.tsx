@@ -3,7 +3,13 @@
 import { useEffect, useState } from "react";
 import { fetchBalance, fetchPositions } from "@/lib/kalshi-api";
 import { hasKalshiKeys } from "@/lib/kalshi-crypto";
+import { ABBR_TO_TEAM, tickerTeamSuffix } from "@/lib/matcher";
 import type { PositionItem } from "@/lib/types";
+
+function parseTeamFromTicker(ticker: string): string | null {
+  const suffix = tickerTeamSuffix(ticker);
+  return ABBR_TO_TEAM[suffix] || null;
+}
 
 interface TerminalDashboardProps {
   onNavigate: (tab: "dashboard" | "manual" | "settings") => void;
@@ -16,7 +22,7 @@ export default function TerminalDashboard({ onNavigate }: TerminalDashboardProps
   const [connected, setConnected] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [positionsOpen, setPositionsOpen] = useState(false);
+  const [positionsOpen, setPositionsOpen] = useState(true);
 
   const fetchData = async () => {
     setLoading(true);
@@ -186,39 +192,44 @@ export default function TerminalDashboard({ onNavigate }: TerminalDashboardProps
             </div>
           ) : (
             <div className="divide-y divide-neutral-800/60">
-              {/* Header row */}
-              <div className="grid grid-cols-4 gap-2 px-4 py-2 text-[10px] uppercase tracking-wider text-neutral-600">
-                <div>Ticker</div>
-                <div className="text-right">Exposure</div>
-                <div className="text-right">Traded</div>
-                <div className="text-right">Resting</div>
-              </div>
-              {positions.map((pos) => (
-                <div
-                  key={pos.ticker}
-                  className="grid grid-cols-4 gap-2 px-4 py-2.5 text-sm hover:bg-neutral-800/30 transition-colors"
-                >
+              {positions.map((pos) => {
+                const teamName = parseTeamFromTicker(pos.ticker);
+                return (
                   <div
-                    className="font-mono text-xs text-neutral-200 truncate"
-                    title={pos.ticker}
+                    key={pos.ticker}
+                    className="px-4 py-3 hover:bg-neutral-800/30 transition-colors"
                   >
-                    {pos.ticker}
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="min-w-0">
+                        <span className="text-sm font-medium text-neutral-100">
+                          {teamName || pos.ticker}
+                        </span>
+                        {teamName && (
+                          <span className="ml-2 text-[10px] text-neutral-600 font-mono">
+                            {pos.ticker}
+                          </span>
+                        )}
+                      </div>
+                      <span
+                        className={`text-sm font-mono font-medium shrink-0 ml-3 ${
+                          pos.exposure >= 0
+                            ? "text-green-400"
+                            : "text-red-400"
+                        }`}
+                      >
+                        {pos.exposure >= 0 ? "+" : "-"}$
+                        {Math.abs(pos.exposure).toFixed(2)}
+                      </span>
+                    </div>
+                    <div className="flex gap-4 text-[10px] text-neutral-500">
+                      <span>Traded: ${pos.totalTraded.toFixed(2)}</span>
+                      {pos.restingOrders > 0 && (
+                        <span>Resting: {pos.restingOrders}</span>
+                      )}
+                    </div>
                   </div>
-                  <div
-                    className={`text-right font-mono text-xs ${
-                      pos.exposure >= 0 ? "text-green-400" : "text-red-400"
-                    }`}
-                  >
-                    ${Math.abs(pos.exposure).toFixed(2)}
-                  </div>
-                  <div className="text-right font-mono text-xs text-neutral-400">
-                    ${pos.totalTraded.toFixed(2)}
-                  </div>
-                  <div className="text-right font-mono text-xs text-neutral-500">
-                    {pos.restingOrders}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

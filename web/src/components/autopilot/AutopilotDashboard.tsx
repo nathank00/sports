@@ -2,14 +2,16 @@
 
 import { useEffect, useState, useRef, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
-import { placeOrder, fetchNbaMarkets } from "@/lib/kalshi-api";
+import { placeOrder, fetchPositions } from "@/lib/kalshi-api";
 import { hasKalshiKeys } from "@/lib/kalshi-crypto";
+import { tickerTeamSuffix } from "@/lib/matcher";
 import AutopilotGameCard from "./AutopilotGameCard";
 import type {
   AutopilotSignal,
   AutopilotGame,
   AutopilotExecution,
   AutopilotSettings,
+  PositionItem,
 } from "@/lib/types";
 
 const DEFAULT_SETTINGS: AutopilotSettings = {
@@ -18,7 +20,8 @@ const DEFAULT_SETTINGS: AutopilotSettings = {
   sizingMode: "dollars",
   betAmount: 10,
   cooldownSeconds: 60,
-  maxContractsPerGame: 20,
+  maxContractsPerBet: 20,
+  maxExposurePerGame: 50,
 };
 
 function loadSettings(): AutopilotSettings {
@@ -26,7 +29,16 @@ function loadSettings(): AutopilotSettings {
   try {
     const raw = localStorage.getItem("autopilot-settings");
     if (!raw) return DEFAULT_SETTINGS;
-    return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+    const parsed = JSON.parse(raw);
+    // Migrate old field name
+    if (
+      parsed.maxContractsPerGame !== undefined &&
+      parsed.maxContractsPerBet === undefined
+    ) {
+      parsed.maxContractsPerBet = parsed.maxContractsPerGame;
+      delete parsed.maxContractsPerGame;
+    }
+    return { ...DEFAULT_SETTINGS, ...parsed };
   } catch {
     return DEFAULT_SETTINGS;
   }
@@ -76,7 +88,7 @@ function getGameDayCutoffUTC(): string {
 
   // Compute ET → UTC offset dynamically (handles EST/EDT automatically)
   const utcHour = now.getUTCHours();
-  const etOffsetHours = ((utcHour - etHour + 24) % 24); // 5 for EST, 4 for EDT
+  const etOffsetHours = (utcHour - etHour + 24) % 24; // 5 for EST, 4 for EDT
   const cutoffUTCHour = 5 + etOffsetHours; // 5 AM ET → 10:00 UTC (EST) or 09:00 UTC (EDT)
 
   return `${yyyy}-${mm}-${dd}T${String(cutoffUTCHour).padStart(2, "0")}:00:00Z`;
@@ -87,12 +99,27 @@ function computeContractCount(
   price: number
 ): number {
   if (settings.sizingMode === "contracts") {
-    return Math.min(settings.betAmount, settings.maxContractsPerGame);
+    return Math.min(settings.betAmount, settings.maxContractsPerBet);
   }
   // dollars mode: betAmount / price
   if (price <= 0 || price >= 1) return 1;
   const count = Math.floor(settings.betAmount / price);
-  return Math.min(Math.max(count, 1), settings.maxContractsPerGame);
+  return Math.min(Math.max(count, 1), settings.maxContractsPerBet);
+}
+
+/**
+ * Match Kalshi positions to a game by checking if the ticker suffix
+ * matches either team's abbreviation.
+ */
+function matchPositionsToGame(
+  positions: PositionItem[],
+  homeTeam: string,
+  awayTeam: string
+): PositionItem[] {
+  return positions.filter((pos) => {
+    const suffix = tickerTeamSuffix(pos.ticker);
+    return suffix === homeTeam || suffix === awayTeam;
+  });
 }
 
 export default function AutopilotDashboard() {
@@ -104,19 +131,37 @@ export default function AutopilotDashboard() {
     "unknown"
   );
   const [showSettings, setShowSettings] = useState(false);
+  const [positions, setPositions] = useState<PositionItem[]>([]);
 
   // Track cooldowns per game for auto-execution
   const lastExecutionTime = useRef<Map<string, number>>(new Map());
-  // Track executions per game
-  const [executions, setExecutions] = useState<Map<string, AutopilotExecution[]>>(
-    new Map()
-  );
+  // Track executions per game (ref for synchronous reads in async callbacks)
+  const executionsRef = useRef<Map<string, AutopilotExecution[]>>(new Map());
+  // Track executions per game (state for rendering)
+  const [executions, setExecutions] = useState<
+    Map<string, AutopilotExecution[]>
+  >(new Map());
 
   // Load settings on mount
   useEffect(() => {
     setSettings(loadSettings());
     hasKalshiKeys().then(setKeysConfigured);
   }, []);
+
+  // Fetch Kalshi positions on mount + refresh every 60s
+  useEffect(() => {
+    if (!keysConfigured) return;
+
+    const loadPositions = () => {
+      fetchPositions()
+        .then(setPositions)
+        .catch((e) => console.error("Failed to fetch positions:", e));
+    };
+
+    loadPositions();
+    const interval = setInterval(loadPositions, 60_000);
+    return () => clearInterval(interval);
+  }, [keysConfigured]);
 
   // Fetch initial signals + subscribe to real-time updates
   useEffect(() => {
@@ -236,6 +281,21 @@ export default function AutopilotDashboard() {
 
     const contracts = computeContractCount(currentSettings, price);
 
+    // Check cumulative per-game exposure cap
+    const gameExecs = executionsRef.current.get(signal.game_id) ?? [];
+    const currentExposure = gameExecs.reduce(
+      (sum, exec) => sum + exec.contracts * exec.price,
+      0
+    );
+    const newExposure = contracts * price;
+    if (currentExposure + newExposure > currentSettings.maxExposurePerGame) {
+      console.log(
+        `Skipping: would exceed per-game exposure cap ` +
+          `($${currentExposure.toFixed(2)} + $${newExposure.toFixed(2)} > $${currentSettings.maxExposurePerGame})`
+      );
+      return;
+    }
+
     // Execute
     try {
       const result = await placeOrder(
@@ -259,6 +319,11 @@ export default function AutopilotDashboard() {
         fillCount: result.fillCount,
       };
 
+      // Update ref synchronously for accurate exposure tracking
+      const prevExecs = executionsRef.current.get(signal.game_id) ?? [];
+      executionsRef.current.set(signal.game_id, [execution, ...prevExecs]);
+
+      // Update state for rendering
       setExecutions((prev) => {
         const next = new Map(prev);
         const existing = next.get(signal.game_id) ?? [];
@@ -374,7 +439,7 @@ export default function AutopilotDashboard() {
             <p className="text-xs text-neutral-500 mt-0.5">
               {settings.autoExecuteEnabled
                 ? keysConfigured
-                  ? `Placing bets when edge > ${settings.edgeThreshold}%`
+                  ? `Placing bets when edge > ${settings.edgeThreshold}% (max $${settings.maxExposurePerGame}/game)`
                   : "Kalshi keys not configured — go to Terminal > Settings"
                 : "Signals display only — no bets placed"}
             </p>
@@ -433,14 +498,30 @@ export default function AutopilotDashboard() {
               </div>
               <div>
                 <label className="text-neutral-500 block mb-1">
-                  Max Contracts / Game
+                  Max Contracts / Bet
                 </label>
                 <input
                   type="number"
-                  value={settings.maxContractsPerGame}
+                  value={settings.maxContractsPerBet}
                   onChange={(e) =>
                     updateSettings({
-                      maxContractsPerGame: Number(e.target.value),
+                      maxContractsPerBet: Number(e.target.value),
+                    })
+                  }
+                  className="w-full bg-neutral-800 border border-neutral-700 rounded px-2 py-1 text-white"
+                  min="1"
+                />
+              </div>
+              <div>
+                <label className="text-neutral-500 block mb-1">
+                  Max Exposure / Game ($)
+                </label>
+                <input
+                  type="number"
+                  value={settings.maxExposurePerGame}
+                  onChange={(e) =>
+                    updateSettings({
+                      maxExposurePerGame: Number(e.target.value),
                     })
                   }
                   className="w-full bg-neutral-800 border border-neutral-700 rounded px-2 py-1 text-white"
@@ -491,6 +572,11 @@ export default function AutopilotDashboard() {
                 key={game.gameId}
                 game={game}
                 executions={executions.get(game.gameId) ?? []}
+                positions={matchPositionsToGame(
+                  positions,
+                  game.homeTeam,
+                  game.awayTeam
+                )}
               />
             ))}
           </div>

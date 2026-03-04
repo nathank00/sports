@@ -30,7 +30,7 @@ on:
       min_edge:
         description: "Minimum edge % to recommend trades"
         required: false
-        default: "8"
+        default: "2"
         type: string
       min_time:
         description: "Minimum seconds remaining to recommend trades"

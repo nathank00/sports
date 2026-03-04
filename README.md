@@ -112,18 +112,18 @@ Both models run on automated schedules via GitHub Actions and write predictions 
 ┌──────────────────────────────────────────────────────────────────┐
 │                      SUPABASE (PostgreSQL)                       │
 │                                                                  │
-│  gamelogs │ mlb_gamelogs │ autopilot_signals │ autopilot_training │
+│  gamelogs │ mlb_gamelogs │ autopilot_signals │ autopilot_training│
 └─────┬───────────┬──────────────┬───────────────────┬─────────────┘
       │           │              │                   │
-┌─────┴─────┐ ┌───┴───┐  ┌──────┴──────┐     ┌──────┴─────┐
-│  PREGAME  │ │  WEB  │  │  AUTOPILOT  │     │   KALSHI   │
-│ PIPELINES │ │(reads)│  │ (live loop) │     │  (trading) │
-└─────┬─────┘ └───────┘  └──────┬──────┘     └────────────┘
-      │                         │
-┌─────┴──────┐          ┌──────┴──────┐
-│  nba_api / │          │  ESPN API / │
-│  MLB Stats │          │  cdn.nba.com│
-└────────────┘          └─────────────┘
+┌─────┴─────┐ ┌───┴───┐   ┌──────┴──────┐     ┌──────┴─────┐
+│  PREGAME  │ │  WEB  │   │  AUTOPILOT  │     │   KALSHI   │
+│ PIPELINES │ │(reads)│   │ (live loop) │     │  (trading) │
+└─────┬─────┘ └───────┘   └──────┬──────┘     └────────────┘
+      │                          │
+┌─────┴──────┐            ┌──────┴──────┐
+│  nba_api / │            │  ESPN API / │
+│  MLB Stats │            │  cdn.nba.com│
+└────────────┘            └─────────────┘
 ```
 
 ---

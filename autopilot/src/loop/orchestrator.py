@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 POLL_INTERVAL = 3.0
 
 # How often to refresh Kalshi market prices (seconds)
-KALSHI_REFRESH_INTERVAL = 30.0
+KALSHI_REFRESH_INTERVAL = 15.0
 
 # Stop running if no active games for this long (seconds)
 NO_GAMES_TIMEOUT = 900  # 15 minutes
@@ -214,6 +214,7 @@ class Orchestrator:
             home_team=home_full,
             away_team=away_full,
             seconds_remaining=seconds_remaining,
+            period=period,
             markets=tracker.kalshi_markets,
             config=self.config,
         )

@@ -52,8 +52,8 @@ def main():
     parser.add_argument(
         "--min-edge",
         type=float,
-        default=8.0,
-        help="Minimum edge %% to generate a trade signal (default: 8)",
+        default=2.0,
+        help="Minimum edge %% to generate a trade signal (default: 2)",
     )
     parser.add_argument(
         "--min-time",

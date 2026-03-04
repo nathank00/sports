@@ -172,5 +172,6 @@ export interface AutopilotSettings {
   sizingMode: SizingMode;
   betAmount: number;
   cooldownSeconds: number;
-  maxContractsPerGame: number;
+  maxContractsPerBet: number;
+  maxExposurePerGame: number;
 }
