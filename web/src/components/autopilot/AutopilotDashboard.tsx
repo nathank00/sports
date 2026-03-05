@@ -217,6 +217,8 @@ export default function AutopilotDashboard() {
   const lastExecutionTime = useRef<Map<string, number>>(new Map());
   // Ref for synchronous position reads in async callbacks (source of truth for exposure)
   const positionsRef = useRef<PositionItem[]>([]);
+  // Ref to always call the latest handleNewSignal from the Supabase subscription
+  const handleNewSignalRef = useRef<(signal: AutopilotSignal) => void>(() => {});
 
   const addLog = useCallback((message: string, type: LogEntry["type"] = "info") => {
     const timestamp = new Date().toLocaleTimeString("en-US", {
@@ -274,7 +276,7 @@ export default function AutopilotDashboard() {
         },
         (payload) => {
           const signal = payload.new as AutopilotSignal;
-          handleNewSignal(signal);
+          handleNewSignalRef.current(signal);
         }
       )
       .subscribe();
@@ -409,6 +411,9 @@ export default function AutopilotDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [settings, keysConfigured, addLog]
   );
+
+  // Keep ref in sync so the Supabase subscription always calls the latest version
+  handleNewSignalRef.current = handleNewSignal;
 
   const maybeAutoExecute = async (signal: AutopilotSignal) => {
     const currentSettings = loadSettings();
