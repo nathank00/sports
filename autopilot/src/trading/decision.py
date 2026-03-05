@@ -50,7 +50,8 @@ class TradingConfig:
     """Trading parameters for signal evaluation."""
 
     min_edge_pct: float = 2.0             # minimum edge to recommend a trade (percentage points)
-    min_seconds_remaining: float = 120.0  # don't trade in final 2 minutes of Q4/OT
+    min_seconds_remaining: float = 180.0  # don't trade in final 3 minutes of Q4/OT
+    blowout_margin: int = 15              # don't trade if score margin > this in Q4+
 
 
 @dataclass
@@ -114,6 +115,8 @@ def evaluate_signal(
     period: int,
     markets: list[dict],
     config: TradingConfig | None = None,
+    home_score: int = 0,
+    away_score: int = 0,
 ) -> TradeSignal:
     """Evaluate whether a trade signal should be generated.
 
@@ -125,11 +128,19 @@ def evaluate_signal(
 
     model_away_prob = 1.0 - model_home_prob
 
-    # Filter: don't trade in final minutes of Q4 or overtime
+    # Filter: don't trade in final 3 minutes of Q4 or overtime
     if period >= 4 and seconds_remaining < config.min_seconds_remaining:
         return TradeSignal(
             recommended_action="NO_TRADE",
             reason=f"Too close to end of {'OT' if period > 4 else 'Q4'} ({seconds_remaining:.0f}s remaining)",
+        )
+
+    # Filter: don't trade blowouts (score margin > threshold in Q4+)
+    score_margin = abs(home_score - away_score)
+    if period >= 4 and score_margin > config.blowout_margin:
+        return TradeSignal(
+            recommended_action="NO_TRADE",
+            reason=f"Blowout — margin {score_margin} pts in {'OT' if period > 4 else 'Q4'} exceeds {config.blowout_margin} pt limit",
         )
 
     # Find matching Kalshi markets

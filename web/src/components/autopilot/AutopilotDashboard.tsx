@@ -436,6 +436,25 @@ export default function AutopilotDashboard() {
       return;
     }
 
+    // Filter: don't trade in final 3 minutes of Q4 or overtime
+    if (signal.period >= 4 && signal.seconds_remaining < 180) {
+      addLog(
+        `${gameLabel}: Too close to end of ${signal.period > 4 ? "OT" : "Q4"} (${signal.seconds_remaining}s left) → skip`,
+        "skip"
+      );
+      return;
+    }
+
+    // Filter: don't trade blowouts (margin > 15 in Q4+)
+    const scoreMargin = Math.abs(signal.home_score - signal.away_score);
+    if (signal.period >= 4 && scoreMargin > 15) {
+      addLog(
+        `${gameLabel}: Blowout — ${scoreMargin} pt margin in ${signal.period > 4 ? "OT" : "Q4"} → skip`,
+        "skip"
+      );
+      return;
+    }
+
     // Check edge threshold
     const edge = signal.edge_vs_kalshi ?? 0;
     if (edge < currentSettings.edgeThreshold) {

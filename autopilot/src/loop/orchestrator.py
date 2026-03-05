@@ -217,6 +217,8 @@ class Orchestrator:
             period=period,
             markets=tracker.kalshi_markets,
             config=self.config,
+            home_score=home_score,
+            away_score=away_score,
         )
 
         # Write signal to database
