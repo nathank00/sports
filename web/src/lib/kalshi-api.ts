@@ -176,18 +176,26 @@ export async function fetchSettlements(
 
   if (!data.settlements) return [];
 
-  return data.settlements.map((s) => ({
-    ticker: s.ticker,
-    eventTicker: s.event_ticker,
-    marketResult: s.market_result,
-    yesCount: s.yes_count ?? 0,
-    noCount: s.no_count ?? 0,
-    // revenue is cents integer → convert to dollars
-    revenue: (s.revenue ?? 0) / 100,
-    // fee_cost is a dollar string → parse directly
-    feesPaid: s.fee_cost ? parseFloat(s.fee_cost) : 0,
-    settledTime: s.settled_time,
-  }));
+  return data.settlements.map((s) => {
+    // revenue = gross payout (cents), yes/no_total_cost = what was paid (cents)
+    // Net P&L = payout - cost
+    const payout = s.revenue ?? 0;
+    const cost = (s.yes_total_cost ?? 0) + (s.no_total_cost ?? 0);
+    const netPnl = (payout - cost) / 100;
+
+    return {
+      ticker: s.ticker,
+      eventTicker: s.event_ticker,
+      marketResult: s.market_result,
+      yesCount: s.yes_count ?? 0,
+      noCount: s.no_count ?? 0,
+      // Net P&L in dollars (negative for losses)
+      revenue: netPnl,
+      // fee_cost is a dollar string → parse directly
+      feesPaid: s.fee_cost ? parseFloat(s.fee_cost) : 0,
+      settledTime: s.settled_time,
+    };
+  });
 }
 
 /**
