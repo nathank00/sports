@@ -3,6 +3,7 @@ import type {
   KalshiMarket,
   OrderResult,
   PositionItem,
+  SettlementItem,
 } from "./types";
 
 // ── Internal helper ────────────────────────────────────────────────────
@@ -99,14 +100,19 @@ export async function fetchPositions(): Promise<PositionItem[]> {
   const data = (await kalshiRequest(
     "GET",
     "/trade-api/v2/portfolio/positions",
-    "limit=200"
+    "limit=200&count_filter=position,total_traded"
   )) as {
     market_positions?: Array<{
       ticker: string;
+      position?: number;
       market_exposure?: number;
       market_exposure_dollars?: string;
       total_traded?: number;
       total_traded_dollars?: string;
+      realized_pnl?: number;
+      realized_pnl_dollars?: string;
+      fees_paid?: number;
+      fees_paid_dollars?: string;
       resting_orders_count?: number;
     }>;
   };
@@ -115,13 +121,70 @@ export async function fetchPositions(): Promise<PositionItem[]> {
 
   return data.market_positions.map((p) => ({
     ticker: p.ticker,
+    position: p.position ?? 0,
     exposure: p.market_exposure_dollars
       ? parseFloat(p.market_exposure_dollars)
       : (p.market_exposure ?? 0) / 100,
     totalTraded: p.total_traded_dollars
       ? parseFloat(p.total_traded_dollars)
       : (p.total_traded ?? 0) / 100,
+    realizedPnl: p.realized_pnl_dollars
+      ? parseFloat(p.realized_pnl_dollars)
+      : (p.realized_pnl ?? 0) / 100,
+    feesPaid: p.fees_paid_dollars
+      ? parseFloat(p.fees_paid_dollars)
+      : (p.fees_paid ?? 0) / 100,
     restingOrders: p.resting_orders_count ?? 0,
+  }));
+}
+
+/**
+ * Fetch settlements (closed positions) within a date range.
+ * @param minTs - ISO timestamp for the start of the range
+ * @param maxTs - ISO timestamp for the end of the range
+ */
+export async function fetchSettlements(
+  minTs?: string,
+  maxTs?: string
+): Promise<SettlementItem[]> {
+  const params = new URLSearchParams({ limit: "200" });
+  if (minTs) params.set("min_ts", minTs);
+  if (maxTs) params.set("max_ts", maxTs);
+
+  const data = (await kalshiRequest(
+    "GET",
+    "/trade-api/v2/portfolio/settlements",
+    params.toString()
+  )) as {
+    settlements?: Array<{
+      ticker: string;
+      event_ticker: string;
+      market_result: string;
+      yes_count?: number;
+      no_count?: number;
+      revenue?: number;
+      revenue_dollars?: string;
+      fee_cost?: number;
+      fee_cost_dollars?: string;
+      settled_time: string;
+    }>;
+  };
+
+  if (!data.settlements) return [];
+
+  return data.settlements.map((s) => ({
+    ticker: s.ticker,
+    eventTicker: s.event_ticker,
+    marketResult: s.market_result,
+    yesCount: s.yes_count ?? 0,
+    noCount: s.no_count ?? 0,
+    revenue: s.revenue_dollars
+      ? parseFloat(s.revenue_dollars)
+      : (s.revenue ?? 0) / 100,
+    feesPaid: s.fee_cost_dollars
+      ? parseFloat(s.fee_cost_dollars)
+      : (s.fee_cost ?? 0) / 100,
+    settledTime: s.settled_time,
   }));
 }
 

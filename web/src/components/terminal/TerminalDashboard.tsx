@@ -1,10 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { fetchBalance, fetchPositions } from "@/lib/kalshi-api";
+import { fetchBalance, fetchPositions, fetchSettlements } from "@/lib/kalshi-api";
 import { hasKalshiKeys } from "@/lib/kalshi-crypto";
 import { ABBR_TO_TEAM, tickerTeamSuffix } from "@/lib/matcher";
-import type { PositionItem } from "@/lib/types";
+import type { PositionItem, SettlementItem } from "@/lib/types";
 
 function parseTeamFromTicker(ticker: string): string | null {
   const suffix = tickerTeamSuffix(ticker);
@@ -15,14 +15,43 @@ interface TerminalDashboardProps {
   onNavigate: (tab: "dashboard" | "manual" | "settings") => void;
 }
 
+/** Get today's date in YYYY-MM-DD format (ET timezone). */
+function getTodayET(): string {
+  return new Date().toLocaleDateString("en-CA", {
+    timeZone: "America/New_York",
+  });
+}
+
+/** Convert a YYYY-MM-DD date string to start/end ISO timestamps (ET). */
+function dateToRange(dateStr: string): { minTs: string; maxTs: string } {
+  // Create timestamps at 5 AM ET (game day boundary) for start,
+  // and 5 AM ET next day for end
+  const d = new Date(dateStr + "T05:00:00");
+  const next = new Date(d);
+  next.setDate(next.getDate() + 1);
+
+  // Adjust for ET offset (approximate: use the date's own offset)
+  const etOffset = new Date(
+    d.toLocaleString("en-US", { timeZone: "America/New_York" })
+  ).getTime() - new Date(d.toLocaleString("en-US", { timeZone: "UTC" })).getTime();
+
+  const minTs = new Date(d.getTime() - etOffset).toISOString();
+  const maxTs = new Date(next.getTime() - etOffset).toISOString();
+  return { minTs, maxTs };
+}
+
 export default function TerminalDashboard({ onNavigate }: TerminalDashboardProps) {
   const [balance, setBalance] = useState(0);
   const [portfolioValue, setPortfolioValue] = useState(0);
   const [positions, setPositions] = useState<PositionItem[]>([]);
+  const [settlements, setSettlements] = useState<SettlementItem[]>([]);
   const [connected, setConnected] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [positionsOpen, setPositionsOpen] = useState(true);
+  const [settlementsOpen, setSettlementsOpen] = useState(true);
+  const [selectedDate, setSelectedDate] = useState(getTodayET());
+  const [settlementsLoading, setSettlementsLoading] = useState(false);
 
   const fetchData = async () => {
     setLoading(true);
@@ -64,9 +93,29 @@ export default function TerminalDashboard({ onNavigate }: TerminalDashboardProps
     setLoading(false);
   };
 
+  const fetchSettlementsForDate = async (dateStr: string) => {
+    setSettlementsLoading(true);
+    try {
+      const { minTs, maxTs } = dateToRange(dateStr);
+      const data = await fetchSettlements(minTs, maxTs);
+      setSettlements(data);
+    } catch (e) {
+      console.error("Failed to fetch settlements:", e);
+      setSettlements([]);
+    }
+    setSettlementsLoading(false);
+  };
+
   useEffect(() => {
     fetchData();
   }, []);
+
+  // Fetch settlements when date changes or when connected
+  useEffect(() => {
+    if (connected) {
+      fetchSettlementsForDate(selectedDate);
+    }
+  }, [selectedDate, connected]);
 
   if (loading) {
     return (
@@ -129,10 +178,19 @@ export default function TerminalDashboard({ onNavigate }: TerminalDashboardProps
         </button>
       </div>
 
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div className="rounded-lg border border-neutral-800 bg-neutral-900/60 p-4">
           <div className="text-xs uppercase tracking-wider text-neutral-500 mb-1">
-            Cash Balance
+            Total Value
+          </div>
+          <div className="font-mono text-2xl font-bold text-white">
+            ${(balance + portfolioValue).toFixed(2)}
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-neutral-800 bg-neutral-900/60 p-4">
+          <div className="text-xs uppercase tracking-wider text-neutral-500 mb-1">
+            Cash
           </div>
           <div className="font-mono text-2xl font-bold text-white">
             ${balance.toFixed(2)}
@@ -141,7 +199,7 @@ export default function TerminalDashboard({ onNavigate }: TerminalDashboardProps
 
         <div className="rounded-lg border border-neutral-800 bg-neutral-900/60 p-4">
           <div className="text-xs uppercase tracking-wider text-neutral-500 mb-1">
-            Portfolio Value
+            Portfolio
           </div>
           <div className="font-mono text-2xl font-bold text-white">
             ${portfolioValue.toFixed(2)}
@@ -154,7 +212,7 @@ export default function TerminalDashboard({ onNavigate }: TerminalDashboardProps
         >
           <div className="flex items-center justify-between">
             <div className="text-xs uppercase tracking-wider text-neutral-500 mb-1">
-              Active Positions
+              Positions
             </div>
             <svg
               className={`w-3.5 h-3.5 text-neutral-500 transition-transform ${
@@ -194,6 +252,9 @@ export default function TerminalDashboard({ onNavigate }: TerminalDashboardProps
             <div className="divide-y divide-neutral-800/60">
               {positions.map((pos) => {
                 const teamName = parseTeamFromTicker(pos.ticker);
+                const contracts = Math.abs(pos.position);
+                const avgPrice =
+                  contracts > 0 ? pos.totalTraded / contracts : 0;
                 return (
                   <div
                     key={pos.ticker}
@@ -222,7 +283,10 @@ export default function TerminalDashboard({ onNavigate }: TerminalDashboardProps
                       </span>
                     </div>
                     <div className="flex gap-4 text-[10px] text-neutral-500">
-                      <span>Traded: ${pos.totalTraded.toFixed(2)}</span>
+                      <span>
+                        {contracts}x @ {(avgPrice * 100).toFixed(0)}c avg
+                      </span>
+                      <span>${pos.totalTraded.toFixed(2)} traded</span>
                       {pos.restingOrders > 0 && (
                         <span>Resting: {pos.restingOrders}</span>
                       )}
@@ -234,6 +298,177 @@ export default function TerminalDashboard({ onNavigate }: TerminalDashboardProps
           )}
         </div>
       )}
+
+      {/* Settlements / History */}
+      <div className="rounded-lg border border-neutral-800 bg-neutral-900/60 overflow-hidden">
+        <div className="px-4 py-3 border-b border-neutral-800/60">
+          <div className="flex items-center justify-between">
+            <button
+              onClick={() => setSettlementsOpen(!settlementsOpen)}
+              className="flex items-center gap-2"
+            >
+              <h2 className="text-xs uppercase tracking-wider text-neutral-500 font-semibold">
+                History
+              </h2>
+              <svg
+                className={`w-3 h-3 text-neutral-500 transition-transform ${
+                  settlementsOpen ? "rotate-180" : ""
+                }`}
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M19 9l-7 7-7-7"
+                />
+              </svg>
+            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => {
+                  const d = new Date(selectedDate);
+                  d.setDate(d.getDate() - 1);
+                  setSelectedDate(d.toISOString().split("T")[0]);
+                }}
+                className="text-neutral-500 hover:text-neutral-300 px-1"
+              >
+                &larr;
+              </button>
+              <input
+                type="date"
+                value={selectedDate}
+                onChange={(e) => setSelectedDate(e.target.value)}
+                max={getTodayET()}
+                className="bg-neutral-800 border border-neutral-700 rounded px-2 py-1 text-xs text-white font-mono"
+              />
+              <button
+                onClick={() => {
+                  const d = new Date(selectedDate);
+                  d.setDate(d.getDate() + 1);
+                  const today = getTodayET();
+                  const next = d.toISOString().split("T")[0];
+                  if (next <= today) setSelectedDate(next);
+                }}
+                disabled={selectedDate >= getTodayET()}
+                className="text-neutral-500 hover:text-neutral-300 px-1 disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                &rarr;
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {settlementsOpen && (
+          <>
+            {settlementsLoading ? (
+              <div className="px-4 py-6 text-center text-sm text-neutral-600">
+                Loading...
+              </div>
+            ) : settlements.length === 0 ? (
+              <div className="px-4 py-6 text-center text-sm text-neutral-600">
+                No settled positions for this date
+              </div>
+            ) : (
+              <>
+                {/* Summary row */}
+                <div className="px-4 py-2 border-b border-neutral-800/60 flex items-center justify-between text-xs">
+                  <span className="text-neutral-500">
+                    {settlements.length} settlement
+                    {settlements.length !== 1 ? "s" : ""}
+                  </span>
+                  <div className="flex items-center gap-3">
+                    <span
+                      className={`font-mono font-medium ${
+                        settlements.reduce((s, t) => s + t.revenue, 0) >= 0
+                          ? "text-green-400"
+                          : "text-red-400"
+                      }`}
+                    >
+                      {settlements.reduce((s, t) => s + t.revenue, 0) >= 0
+                        ? "+"
+                        : ""}
+                      $
+                      {Math.abs(
+                        settlements.reduce((s, t) => s + t.revenue, 0)
+                      ).toFixed(2)}{" "}
+                      net
+                    </span>
+                    <span className="text-neutral-600">
+                      ${settlements
+                        .reduce((s, t) => s + t.feesPaid, 0)
+                        .toFixed(2)}{" "}
+                      fees
+                    </span>
+                  </div>
+                </div>
+
+                <div className="divide-y divide-neutral-800/60">
+                  {settlements.map((s, i) => {
+                    const teamName = parseTeamFromTicker(s.ticker);
+                    const contracts = s.yesCount + s.noCount;
+                    const won = s.revenue > 0;
+                    return (
+                      <div
+                        key={`${s.ticker}-${i}`}
+                        className="px-4 py-3 hover:bg-neutral-800/30 transition-colors"
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="min-w-0">
+                            <span className="text-sm font-medium text-neutral-100">
+                              {teamName || s.ticker}
+                            </span>
+                            <span
+                              className={`ml-2 text-[10px] font-medium px-1.5 py-0.5 rounded ${
+                                won
+                                  ? "bg-green-900/40 text-green-400"
+                                  : "bg-red-900/40 text-red-400"
+                              }`}
+                            >
+                              {won ? "WON" : "LOST"}
+                            </span>
+                          </div>
+                          <span
+                            className={`text-sm font-mono font-medium shrink-0 ml-3 ${
+                              s.revenue >= 0
+                                ? "text-green-400"
+                                : "text-red-400"
+                            }`}
+                          >
+                            {s.revenue >= 0 ? "+" : "-"}$
+                            {Math.abs(s.revenue).toFixed(2)}
+                          </span>
+                        </div>
+                        <div className="flex gap-4 text-[10px] text-neutral-500">
+                          <span>
+                            {contracts} contract{contracts !== 1 ? "s" : ""}
+                          </span>
+                          <span>Result: {s.marketResult.toUpperCase()}</span>
+                          <span>
+                            {new Date(s.settledTime).toLocaleTimeString(
+                              "en-US",
+                              {
+                                hour: "numeric",
+                                minute: "2-digit",
+                                timeZone: "America/New_York",
+                              }
+                            )}
+                          </span>
+                          {s.feesPaid > 0 && (
+                            <span>Fee: ${s.feesPaid.toFixed(2)}</span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }

@@ -47,37 +47,69 @@ function formatStartTime(iso: string): string {
 
 // ── Positions section (shared between pregame and live) ────────────────
 
-function PositionsSection({ positions }: { positions: PositionItem[] }) {
+function PositionsSection({
+  positions,
+  currentHomePrice,
+  currentAwayPrice,
+  homeTeam,
+}: {
+  positions: PositionItem[];
+  currentHomePrice?: number | null;
+  currentAwayPrice?: number | null;
+  homeTeam?: string;
+}) {
   if (positions.length === 0) return null;
 
   return (
     <div className="text-xs mb-2 py-1.5 px-2 rounded bg-neutral-800/50 border border-neutral-800">
       <p className="text-neutral-500 mb-1">Positions</p>
-      {positions.map((pos) => (
-        <div
-          key={pos.ticker}
-          className="flex items-center justify-between py-0.5"
-        >
-          <div className="flex items-center gap-2">
-            <span className="text-neutral-400 font-medium">
-              {pos.ticker.split("-").pop()}
-            </span>
-            <span
-              className={`font-mono font-medium ${
-                pos.exposure >= 0 ? "text-green-400" : "text-red-400"
-              }`}
-            >
-              {pos.exposure >= 0 ? "+" : ""}${pos.exposure.toFixed(2)}
-            </span>
+      {positions.map((pos) => {
+        const contracts = Math.abs(pos.position);
+        const avgPrice =
+          contracts > 0 ? pos.totalTraded / contracts : 0;
+
+        // Determine current market price for this side
+        const suffix = pos.ticker.split("-").pop() ?? "";
+        const isHomeSide = homeTeam && suffix === homeTeam;
+        const currentPrice = isHomeSide ? currentHomePrice : currentAwayPrice;
+
+        // Unrealized P&L: (current_price - avg_entry) * contracts
+        const unrealizedPnl =
+          currentPrice && contracts > 0
+            ? (currentPrice - avgPrice) * contracts
+            : null;
+
+        return (
+          <div
+            key={pos.ticker}
+            className="flex items-center justify-between py-0.5"
+          >
+            <div className="flex items-center gap-2">
+              <span className="text-neutral-400 font-medium">{suffix}</span>
+              <span className="text-neutral-300 font-mono">
+                {contracts}x @ {(avgPrice * 100).toFixed(0)}c
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              {unrealizedPnl != null && (
+                <span
+                  className={`font-mono font-medium ${
+                    unrealizedPnl >= 0 ? "text-green-400" : "text-red-400"
+                  }`}
+                >
+                  {unrealizedPnl >= 0 ? "+" : ""}
+                  {unrealizedPnl.toFixed(2)}
+                </span>
+              )}
+              {currentPrice != null && (
+                <span className="text-neutral-600">
+                  now {(currentPrice * 100).toFixed(0)}c
+                </span>
+              )}
+            </div>
           </div>
-          <div className="flex items-center gap-2 text-neutral-600">
-            <span>${pos.totalTraded.toFixed(2)} traded</span>
-            {pos.restingOrders > 0 && (
-              <span>{pos.restingOrders} resting</span>
-            )}
-          </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -148,7 +180,12 @@ function PregameCard({
         </div>
       )}
 
-      <PositionsSection positions={positions} />
+      <PositionsSection
+        positions={positions}
+        currentHomePrice={homePrice}
+        currentAwayPrice={awayPrice}
+        homeTeam={game.homeTeam}
+      />
 
       <div className="text-xs text-neutral-600 mt-1">
         Model signals will appear when the game starts
@@ -265,7 +302,12 @@ function LiveCard({
         </div>
       )}
 
-      <PositionsSection positions={positions} />
+      <PositionsSection
+        positions={positions}
+        currentHomePrice={s.kalshi_home_price}
+        currentAwayPrice={s.kalshi_away_price}
+        homeTeam={s.home_team}
+      />
 
       {/* Expand for signal history */}
       {game.signals.length > 0 && (

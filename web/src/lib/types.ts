@@ -81,9 +81,29 @@ export interface OrderResult {
 /** A single portfolio position. */
 export interface PositionItem {
   ticker: string;
+  /** Number of contracts currently held (positive = yes, negative = no). */
+  position: number;
   exposure: number;
   totalTraded: number;
   restingOrders: number;
+  realizedPnl: number;
+  feesPaid: number;
+}
+
+/** A settled (closed) position from Kalshi. */
+export interface SettlementItem {
+  ticker: string;
+  eventTicker: string;
+  /** "yes" or "no" — the side that won */
+  marketResult: string;
+  yesCount: number;
+  noCount: number;
+  /** Net payout in dollars (positive = profit, negative = loss) */
+  revenue: number;
+  /** Total fees paid on this position */
+  feesPaid: number;
+  /** ISO timestamp when settled */
+  settledTime: string;
 }
 
 /** Portfolio overview data. */

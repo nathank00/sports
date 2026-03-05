@@ -524,6 +524,25 @@ export default function AutopilotDashboard() {
     });
   };
 
+  /**
+   * Compute how far into a game we are as a single number (higher = further along).
+   * Total regulation = 4 quarters × 720s = 2880s.
+   * elapsed = (2880 - seconds_remaining) for regulation, plus 300 per OT period.
+   * Returns 0 for pregame, negative for completed (so they sort last).
+   */
+  const getGameProgress = (game: AutopilotGame): number => {
+    if (!game.latestSignal) return 0; // pregame
+    const s = game.latestSignal;
+    // Total seconds in regulation
+    const totalRegulation = 2880;
+    const elapsed = totalRegulation - s.seconds_remaining;
+    // Add extra time for overtime periods (each OT = 300s)
+    if (s.period > 4) {
+      return totalRegulation + (s.period - 4) * 300 + (300 - s.seconds_remaining);
+    }
+    return elapsed;
+  };
+
   const gameList = Array.from(games.values()).sort((a, b) => {
     const aLive = a.latestSignal !== null;
     const bLive = b.latestSignal !== null;
@@ -532,12 +551,9 @@ export default function AutopilotDashboard() {
     if (aLive && !bLive) return -1;
     if (!aLive && bLive) return 1;
 
-    // Both live: sort by most recent signal
+    // Both live: sort by game progress (furthest along first)
     if (aLive && bLive) {
-      return (
-        new Date(b.latestSignal!.created_at).getTime() -
-        new Date(a.latestSignal!.created_at).getTime()
-      );
+      return getGameProgress(b) - getGameProgress(a);
     }
 
     // Both pregame: sort by start time (earliest first)
