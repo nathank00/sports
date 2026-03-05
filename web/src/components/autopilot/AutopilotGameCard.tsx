@@ -6,6 +6,7 @@ import type { AutopilotGame, PositionItem } from "@/lib/types";
 interface Props {
   game: AutopilotGame;
   positions: PositionItem[];
+  edgeThreshold: number;
 }
 
 function formatClock(period: number, secondsRemaining: number): string {
@@ -161,15 +162,26 @@ function PregameCard({
 function LiveCard({
   game,
   positions,
+  edgeThreshold,
 }: {
   game: AutopilotGame;
   positions: PositionItem[];
+  edgeThreshold: number;
 }) {
   const [expanded, setExpanded] = useState(false);
   const s = game.latestSignal!;
 
   const homeProb = s.model_home_win_prob;
   const awayProb = 1 - homeProb;
+
+  // Apply user's edge threshold to determine displayed action
+  // Backend uses a 2% floor, but the user may have a higher threshold
+  const displayedAction =
+    s.recommended_action !== "NO_TRADE" &&
+    s.edge_vs_kalshi != null &&
+    s.edge_vs_kalshi < edgeThreshold
+      ? "NO_TRADE"
+      : s.recommended_action;
 
   return (
     <div className="rounded-lg border border-neutral-800 bg-neutral-900/60 p-4">
@@ -216,12 +228,12 @@ function LiveCard({
         <div className="flex items-center gap-2">
           <span
             className={`text-xs font-medium px-2 py-0.5 rounded ${
-              s.recommended_action !== "NO_TRADE"
+              displayedAction !== "NO_TRADE"
                 ? "bg-green-900/40 text-green-400 border border-green-800"
                 : "bg-neutral-800 text-neutral-500 border border-neutral-700"
             }`}
           >
-            {s.recommended_action}
+            {displayedAction}
           </span>
           {s.edge_vs_kalshi != null && (
             <span className="text-xs text-neutral-400">
@@ -284,8 +296,18 @@ function LiveCard({
               <span className="text-neutral-300">
                 P(H)={probBar(sig.model_home_win_prob)}
               </span>
-              <span className={actionColor(sig.recommended_action)}>
-                {sig.recommended_action}
+              <span className={actionColor(
+                sig.recommended_action !== "NO_TRADE" &&
+                sig.edge_vs_kalshi != null &&
+                sig.edge_vs_kalshi < edgeThreshold
+                  ? "NO_TRADE"
+                  : sig.recommended_action
+              )}>
+                {sig.recommended_action !== "NO_TRADE" &&
+                sig.edge_vs_kalshi != null &&
+                sig.edge_vs_kalshi < edgeThreshold
+                  ? "NO_TRADE"
+                  : sig.recommended_action}
               </span>
             </div>
           ))}
@@ -297,9 +319,9 @@ function LiveCard({
 
 // ── Main export ────────────────────────────────────────────────────────
 
-export default function AutopilotGameCard({ game, positions }: Props) {
+export default function AutopilotGameCard({ game, positions, edgeThreshold }: Props) {
   if (game.latestSignal) {
-    return <LiveCard game={game} positions={positions} />;
+    return <LiveCard game={game} positions={positions} edgeThreshold={edgeThreshold} />;
   }
   return <PregameCard game={game} positions={positions} />;
 }

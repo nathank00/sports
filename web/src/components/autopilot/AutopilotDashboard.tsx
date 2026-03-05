@@ -697,6 +697,7 @@ export default function AutopilotDashboard() {
                   game.homeTeam,
                   game.awayTeam
                 )}
+                edgeThreshold={settings.edgeThreshold}
               />
             ))}
           </div>
