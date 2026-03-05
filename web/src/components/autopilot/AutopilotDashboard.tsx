@@ -194,6 +194,12 @@ interface ScheduledGame {
   kalshiAwayPrice: number | null;
 }
 
+interface LogEntry {
+  timestamp: string;
+  message: string;
+  type: "info" | "skip" | "trade" | "error";
+}
+
 export default function AutopilotDashboard() {
   const [games, setGames] = useState<Map<string, AutopilotGame>>(new Map());
   const [settings, setSettings] = useState<AutopilotSettings>(DEFAULT_SETTINGS);
@@ -204,11 +210,23 @@ export default function AutopilotDashboard() {
   );
   const [showSettings, setShowSettings] = useState(false);
   const [positions, setPositions] = useState<PositionItem[]>([]);
+  const [activityLog, setActivityLog] = useState<LogEntry[]>([]);
+  const [showLog, setShowLog] = useState(false);
 
   // Track cooldowns per game for auto-execution
   const lastExecutionTime = useRef<Map<string, number>>(new Map());
   // Ref for synchronous position reads in async callbacks (source of truth for exposure)
   const positionsRef = useRef<PositionItem[]>([]);
+
+  const addLog = useCallback((message: string, type: LogEntry["type"] = "info") => {
+    const timestamp = new Date().toLocaleTimeString("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: true,
+    });
+    setActivityLog((prev) => [{ timestamp, message, type }, ...prev].slice(0, 100));
+  }, []);
 
   // Load settings on mount
   useEffect(() => {
@@ -389,30 +407,55 @@ export default function AutopilotDashboard() {
       maybeAutoExecute(signal);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [settings, keysConfigured]
+    [settings, keysConfigured, addLog]
   );
 
   const maybeAutoExecute = async (signal: AutopilotSignal) => {
     const currentSettings = loadSettings();
+    const gameLabel = `${signal.away_team}@${signal.home_team}`;
 
-    if (!currentSettings.autoExecuteEnabled) return;
-    if (!keysConfigured) return;
-    if (signal.recommended_action === "NO_TRADE") return;
-    if (!signal.recommended_ticker) return;
+    if (!currentSettings.autoExecuteEnabled) {
+      addLog(`${gameLabel}: Auto-execute OFF, skipping`, "skip");
+      return;
+    }
+    if (!keysConfigured) {
+      addLog(`${gameLabel}: Kalshi keys not configured`, "skip");
+      return;
+    }
+    if (signal.recommended_action === "NO_TRADE") {
+      addLog(`${gameLabel}: Backend says NO_TRADE — ${signal.reason ?? "no reason"}`, "skip");
+      return;
+    }
+    if (!signal.recommended_ticker) {
+      addLog(`${gameLabel}: No recommended ticker`, "skip");
+      return;
+    }
 
     // Check edge threshold
     const edge = signal.edge_vs_kalshi ?? 0;
-    if (edge < currentSettings.edgeThreshold) return;
+    if (edge < currentSettings.edgeThreshold) {
+      addLog(
+        `${gameLabel}: Edge ${edge.toFixed(1)}% < threshold ${currentSettings.edgeThreshold}% → skip`,
+        "skip"
+      );
+      return;
+    }
 
     // Check cooldown
     const now = Date.now();
     const lastExec = lastExecutionTime.current.get(signal.game_id) ?? 0;
-    if (now - lastExec < currentSettings.cooldownSeconds * 1000) return;
+    const cooldownRemaining = Math.ceil(
+      (currentSettings.cooldownSeconds * 1000 - (now - lastExec)) / 1000
+    );
+    if (now - lastExec < currentSettings.cooldownSeconds * 1000) {
+      addLog(
+        `${gameLabel}: Cooldown active (${cooldownRemaining}s remaining)`,
+        "skip"
+      );
+      return;
+    }
 
     // Determine limit price: model_prob - edge_threshold
-    // This guarantees at least edgeThreshold% edge on every fill,
-    // while giving enough room for the order to fill even if the
-    // market has moved slightly since the signal was generated.
     const modelProb =
       signal.recommended_action === "BUY_HOME"
         ? signal.model_home_win_prob
@@ -420,7 +463,13 @@ export default function AutopilotDashboard() {
 
     const limitPrice = modelProb - currentSettings.edgeThreshold / 100;
 
-    if (limitPrice <= 0 || limitPrice >= 1) return;
+    if (limitPrice <= 0 || limitPrice >= 1) {
+      addLog(
+        `${gameLabel}: Invalid limit price ${(limitPrice * 100).toFixed(0)}c (model=${(modelProb * 100).toFixed(0)}c - ${currentSettings.edgeThreshold}%)`,
+        "skip"
+      );
+      return;
+    }
 
     const contracts = computeContractCount(currentSettings, limitPrice);
 
@@ -432,12 +481,17 @@ export default function AutopilotDashboard() {
     );
     const newExposure = contracts * limitPrice;
     if (currentExposure + newExposure > currentSettings.maxExposurePerGame) {
-      console.log(
-        `Skipping: would exceed per-game exposure cap ` +
-          `($${currentExposure.toFixed(2)} + $${newExposure.toFixed(2)} > $${currentSettings.maxExposurePerGame})`
+      addLog(
+        `${gameLabel}: Exposure cap — $${currentExposure.toFixed(2)} existing + $${newExposure.toFixed(2)} new > $${currentSettings.maxExposurePerGame} max`,
+        "skip"
       );
       return;
     }
+
+    addLog(
+      `${gameLabel}: Placing ${signal.recommended_action} x${contracts} @ limit ${(limitPrice * 100).toFixed(0)}c (model=${(modelProb * 100).toFixed(0)}c - ${currentSettings.edgeThreshold}% threshold)`,
+      "info"
+    );
 
     // Execute — limit order at (model_prob - threshold)
     try {
@@ -450,14 +504,13 @@ export default function AutopilotDashboard() {
 
       lastExecutionTime.current.set(signal.game_id, now);
 
-      console.log(
-        `Trade executed: ${signal.recommended_action} ${signal.recommended_ticker} ` +
-          `x${contracts} @ limit ${(limitPrice * 100).toFixed(0)}c ` +
-          `(model=${(modelProb * 100).toFixed(0)}c - ${currentSettings.edgeThreshold}% threshold) | ` +
-          `status=${result.status} fill=${result.fillCount ?? "?"}`
+      addLog(
+        `${gameLabel}: ORDER ${result.status} — ${signal.recommended_ticker} x${contracts} @ ${(limitPrice * 100).toFixed(0)}c | fill=${result.fillCount ?? "?"}`,
+        result.fillCount && result.fillCount > 0 ? "trade" : "info"
       );
     } catch (e) {
-      console.error("Auto-execution failed:", e);
+      const errMsg = e instanceof Error ? e.message : String(e);
+      addLog(`${gameLabel}: ORDER FAILED — ${errMsg}`, "error");
     }
   };
 
@@ -520,6 +573,20 @@ export default function AutopilotDashboard() {
               </span>
             </div>
 
+            {/* Log toggle */}
+            <button
+              onClick={() => setShowLog(!showLog)}
+              className={`text-xs border rounded px-2 py-1 ${
+                activityLog.some((l) => l.type === "error")
+                  ? "text-red-400 border-red-800 hover:text-red-300"
+                  : activityLog.some((l) => l.type === "trade")
+                    ? "text-green-400 border-green-800 hover:text-green-300"
+                    : "text-neutral-500 border-neutral-800 hover:text-neutral-300"
+              }`}
+            >
+              Log{activityLog.length > 0 ? ` (${activityLog.length})` : ""}
+            </button>
+
             {/* Settings toggle */}
             <button
               onClick={() => setShowSettings(!showSettings)}
@@ -572,6 +639,49 @@ export default function AutopilotDashboard() {
             </p>
           </div>
         </div>
+
+        {/* Activity log */}
+        {showLog && (
+          <div className="mt-3 p-4 rounded-lg border border-neutral-800 bg-neutral-900/60">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-sm font-medium">Activity Log</h3>
+              <button
+                onClick={() => setActivityLog([])}
+                className="text-xs text-neutral-600 hover:text-neutral-400"
+              >
+                Clear
+              </button>
+            </div>
+            {activityLog.length === 0 ? (
+              <p className="text-xs text-neutral-600">
+                No activity yet. Signals will be evaluated as they arrive.
+              </p>
+            ) : (
+              <div className="max-h-64 overflow-y-auto space-y-0.5">
+                {activityLog.map((entry, i) => (
+                  <div key={i} className="flex gap-2 text-xs font-mono">
+                    <span className="text-neutral-600 shrink-0">
+                      {entry.timestamp}
+                    </span>
+                    <span
+                      className={
+                        entry.type === "error"
+                          ? "text-red-400"
+                          : entry.type === "trade"
+                            ? "text-green-400"
+                            : entry.type === "skip"
+                              ? "text-neutral-500"
+                              : "text-yellow-400"
+                      }
+                    >
+                      {entry.message}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Settings panel */}
         {showSettings && (
