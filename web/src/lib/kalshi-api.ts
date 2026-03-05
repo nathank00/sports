@@ -235,7 +235,8 @@ export async function fetchNbaMarkets(): Promise<KalshiMarket[]> {
 }
 
 /**
- * Place a limit order on Kalshi.
+ * Place a limit order on Kalshi with a 30-second expiration.
+ * The expiration prevents resting orders from accumulating if the market moves.
  */
 export async function placeOrder(
   ticker: string,
@@ -245,6 +246,9 @@ export async function placeOrder(
 ): Promise<OrderResult> {
   const priceField =
     side === "yes" ? "yes_price_dollars" : "no_price_dollars";
+
+  // Expire the order after 30 seconds so it doesn't sit as a resting order
+  const expirationTs = Math.floor(Date.now() / 1000) + 30;
 
   const data = (await kalshiRequest(
     "POST",
@@ -257,6 +261,7 @@ export async function placeOrder(
       count,
       [priceField]: priceDollars,
       type: "limit",
+      expiration_ts: expirationTs,
     }
   )) as {
     order: {

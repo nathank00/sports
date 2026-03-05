@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
-import { placeOrder, fetchPositions } from "@/lib/kalshi-api";
+import { placeOrder, fetchPositions, fetchNbaMarkets } from "@/lib/kalshi-api";
 import { hasKalshiKeys } from "@/lib/kalshi-crypto";
 import { tickerTeamSuffix } from "@/lib/matcher";
 import AutopilotGameCard from "./AutopilotGameCard";
@@ -460,16 +460,47 @@ export default function AutopilotDashboard() {
       return;
     }
 
-    // Buy at the current Kalshi ask price.
-    // The edge check above already guarantees ask < model_prob - threshold,
-    // so we get the best available price while maintaining minimum edge.
-    const price =
-      signal.recommended_action === "BUY_HOME"
-        ? signal.kalshi_home_price
-        : signal.kalshi_away_price;
+    // Fetch the freshest Kalshi ask price right before placing the order.
+    // The signal price may be 30-60s stale by the time we execute.
+    let price: number | null = null;
+    try {
+      const markets = await fetchNbaMarkets();
+      const market = markets.find((m) => m.ticker === signal.recommended_ticker);
+      if (market?.yesAsk != null) {
+        price = market.yesAsk;
+        addLog(
+          `${gameLabel}: Fresh Kalshi ask for ${signal.recommended_ticker}: ${(price * 100).toFixed(0)}c (signal was ${((signal.recommended_action === "BUY_HOME" ? signal.kalshi_home_price : signal.kalshi_away_price) ?? 0) * 100}c)`,
+          "info"
+        );
+      }
+    } catch {
+      addLog(`${gameLabel}: Could not fetch fresh prices, using signal price`, "info");
+    }
+
+    // Fall back to signal price if fresh fetch failed
+    if (!price) {
+      price =
+        signal.recommended_action === "BUY_HOME"
+          ? signal.kalshi_home_price
+          : signal.kalshi_away_price;
+    }
 
     if (!price || price <= 0 || price >= 1) {
       addLog(`${gameLabel}: Invalid Kalshi price (${price})`, "skip");
+      return;
+    }
+
+    // Re-verify edge with the fresh price
+    const modelProb =
+      signal.recommended_action === "BUY_HOME"
+        ? signal.model_home_win_prob
+        : 1 - signal.model_home_win_prob;
+    const freshEdge = (modelProb - price) * 100;
+    if (freshEdge < currentSettings.edgeThreshold) {
+      addLog(
+        `${gameLabel}: Fresh edge ${freshEdge.toFixed(1)}% < threshold ${currentSettings.edgeThreshold}% (price moved) → skip`,
+        "skip"
+      );
       return;
     }
 
@@ -491,11 +522,11 @@ export default function AutopilotDashboard() {
     }
 
     addLog(
-      `${gameLabel}: Placing ${signal.recommended_action} x${contracts} @ ${(price * 100).toFixed(0)}c (edge=${edge.toFixed(1)}%)`,
+      `${gameLabel}: Placing ${signal.recommended_action} x${contracts} @ ${(price * 100).toFixed(0)}c (edge=${freshEdge.toFixed(1)}%)`,
       "info"
     );
 
-    // Execute — limit order at current Kalshi ask (fills at this price or better)
+    // Execute — limit order at fresh Kalshi ask (fills at this price or better)
     try {
       const result = await placeOrder(
         signal.recommended_ticker,

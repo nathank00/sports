@@ -1,10 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { fetchBalance, fetchPositions, fetchSettlements } from "@/lib/kalshi-api";
+import { fetchBalance, fetchPositions, fetchSettlements, fetchNbaMarkets } from "@/lib/kalshi-api";
 import { hasKalshiKeys } from "@/lib/kalshi-crypto";
 import { ABBR_TO_TEAM, tickerTeamSuffix } from "@/lib/matcher";
-import type { PositionItem, SettlementItem } from "@/lib/types";
+import type { KalshiMarket, PositionItem, SettlementItem } from "@/lib/types";
 
 function parseTeamFromTicker(ticker: string): string | null {
   const suffix = tickerTeamSuffix(ticker);
@@ -45,6 +45,8 @@ export default function TerminalDashboard({ onNavigate }: TerminalDashboardProps
   const [portfolioValue, setPortfolioValue] = useState(0);
   const [positions, setPositions] = useState<PositionItem[]>([]);
   const [settlements, setSettlements] = useState<SettlementItem[]>([]);
+  /** Current market bid prices keyed by ticker — used for live P&L. */
+  const [marketPrices, setMarketPrices] = useState<Map<string, number>>(new Map());
   const [connected, setConnected] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -66,7 +68,7 @@ export default function TerminalDashboard({ onNavigate }: TerminalDashboardProps
     }
 
     try {
-      const [balData, posData] = await Promise.all([
+      const [balData, posData, marketsData] = await Promise.all([
         Promise.race([
           fetchBalance(),
           new Promise<never>((_, reject) =>
@@ -79,11 +81,27 @@ export default function TerminalDashboard({ onNavigate }: TerminalDashboardProps
             setTimeout(() => reject(new Error("Request timed out")), 10000)
           ),
         ]),
+        Promise.race([
+          fetchNbaMarkets(),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error("Request timed out")), 10000)
+          ),
+        ]).catch(() => [] as KalshiMarket[]),
       ]);
 
       setBalance(balData.balance);
       setPortfolioValue(balData.portfolioValue);
       setPositions(posData);
+
+      // Build ticker → yesBid map for live P&L calculation
+      const priceMap = new Map<string, number>();
+      for (const m of marketsData) {
+        if (m.yesBid != null) {
+          priceMap.set(m.ticker, m.yesBid);
+        }
+      }
+      setMarketPrices(priceMap);
+
       setConnected(true);
     } catch (e) {
       setConnected(false);
@@ -110,7 +128,7 @@ export default function TerminalDashboard({ onNavigate }: TerminalDashboardProps
     fetchData();
   }, []);
 
-  // Refresh positions + balance every 15s for real-time data
+  // Refresh positions + balance every 15s
   useEffect(() => {
     if (!connected) return;
     const interval = setInterval(async () => {
@@ -126,6 +144,26 @@ export default function TerminalDashboard({ onNavigate }: TerminalDashboardProps
         console.error("Position refresh failed:", e);
       }
     }, 15_000);
+    return () => clearInterval(interval);
+  }, [connected]);
+
+  // Refresh market prices every 3s for near-real-time P&L
+  useEffect(() => {
+    if (!connected) return;
+    const interval = setInterval(async () => {
+      try {
+        const marketsData = await fetchNbaMarkets();
+        const priceMap = new Map<string, number>();
+        for (const m of marketsData) {
+          if (m.yesBid != null) {
+            priceMap.set(m.ticker, m.yesBid);
+          }
+        }
+        setMarketPrices(priceMap);
+      } catch {
+        // Silently skip — stale prices are fine for a few seconds
+      }
+    }, 3_000);
     return () => clearInterval(interval);
   }, [connected]);
 
@@ -262,24 +300,32 @@ export default function TerminalDashboard({ onNavigate }: TerminalDashboardProps
             <h2 className="text-xs uppercase tracking-wider text-neutral-500 font-semibold">
               Open Positions
             </h2>
-            {positions.length > 0 && (
-              <div className="flex items-center gap-3 text-[10px]">
-                <span className="text-neutral-500">
-                  Cost Basis: ${positions.reduce((s, p) => s + p.totalTraded, 0).toFixed(2)}
-                </span>
-                <span
-                  className={`font-mono font-medium ${
-                    positions.reduce((s, p) => s + p.exposure, 0) >= 0
-                      ? "text-green-400"
-                      : "text-red-400"
-                  }`}
-                >
-                  Unrealized P&L:{" "}
-                  {positions.reduce((s, p) => s + p.exposure, 0) >= 0 ? "+" : ""}
-                  ${positions.reduce((s, p) => s + p.exposure, 0).toFixed(2)}
-                </span>
-              </div>
-            )}
+            {positions.length > 0 && (() => {
+              const totalCostBasis = positions.reduce((s, p) => s + p.totalTraded, 0);
+              const totalMarketValue = positions.reduce((s, p) => {
+                const qty = Math.abs(p.position);
+                const bid = marketPrices.get(p.ticker);
+                return s + (bid != null ? qty * bid : p.totalTraded);
+              }, 0);
+              const totalPnl = totalMarketValue - totalCostBasis;
+
+              return (
+                <div className="flex items-center gap-3 text-[10px]">
+                  <span className="text-neutral-500">
+                    Cost Basis: ${totalCostBasis.toFixed(2)}
+                  </span>
+                  <span
+                    className={`font-mono font-medium ${
+                      totalPnl >= 0 ? "text-green-400" : "text-red-400"
+                    }`}
+                  >
+                    Unrealized P&L:{" "}
+                    {totalPnl >= 0 ? "+" : ""}
+                    ${totalPnl.toFixed(2)}
+                  </span>
+                </div>
+              );
+            })()}
           </div>
           {positions.length === 0 ? (
             <div className="px-4 py-6 text-center text-sm text-neutral-600">
@@ -301,12 +347,14 @@ export default function TerminalDashboard({ onNavigate }: TerminalDashboardProps
                   const qty = Math.abs(pos.position);
                   const avgCost = qty > 0 ? pos.totalTraded / qty : 0;
                   const costBasis = pos.totalTraded;
-                  const marketValue = costBasis + pos.exposure;
-                  const unrealizedPnl = pos.exposure;
+                  // Use live market bid price for valuation (what we could sell at)
+                  const currentBid = marketPrices.get(pos.ticker);
+                  const marketValue = currentBid != null ? qty * currentBid : null;
+                  const unrealizedPnl = marketValue != null ? marketValue - costBasis : null;
                   const unrealizedPct =
-                    costBasis > 0
+                    costBasis > 0 && unrealizedPnl != null
                       ? (unrealizedPnl / costBasis) * 100
-                      : 0;
+                      : null;
 
                   return (
                     <div
@@ -343,38 +391,54 @@ export default function TerminalDashboard({ onNavigate }: TerminalDashboardProps
 
                         {/* Market Value */}
                         <div className="col-span-2 text-right">
-                          <span className="text-sm font-mono text-neutral-200">
-                            ${marketValue.toFixed(2)}
-                          </span>
-                          {qty > 0 && (
-                            <div className="text-[10px] text-neutral-600 font-mono">
-                              {((marketValue / qty) * 100).toFixed(0)}c/ea
-                            </div>
+                          {marketValue != null ? (
+                            <>
+                              <span className="text-sm font-mono text-neutral-200">
+                                ${marketValue.toFixed(2)}
+                              </span>
+                              {qty > 0 && currentBid != null && (
+                                <div className="text-[10px] text-neutral-600 font-mono">
+                                  {(currentBid * 100).toFixed(0)}c/ea
+                                </div>
+                              )}
+                            </>
+                          ) : (
+                            <span className="text-sm font-mono text-neutral-600">
+                              —
+                            </span>
                           )}
                         </div>
 
                         {/* Unrealized P&L */}
                         <div className="col-span-2 text-right">
-                          <span
-                            className={`text-sm font-mono font-medium ${
-                              unrealizedPnl >= 0
-                                ? "text-green-400"
-                                : "text-red-400"
-                            }`}
-                          >
-                            {unrealizedPnl >= 0 ? "+" : ""}
-                            ${unrealizedPnl.toFixed(2)}
-                          </span>
-                          <div
-                            className={`text-[10px] font-mono ${
-                              unrealizedPct >= 0
-                                ? "text-green-600"
-                                : "text-red-600"
-                            }`}
-                          >
-                            {unrealizedPct >= 0 ? "+" : ""}
-                            {unrealizedPct.toFixed(1)}%
-                          </div>
+                          {unrealizedPnl != null && unrealizedPct != null ? (
+                            <>
+                              <span
+                                className={`text-sm font-mono font-medium ${
+                                  unrealizedPnl >= 0
+                                    ? "text-green-400"
+                                    : "text-red-400"
+                                }`}
+                              >
+                                {unrealizedPnl >= 0 ? "+" : ""}
+                                ${unrealizedPnl.toFixed(2)}
+                              </span>
+                              <div
+                                className={`text-[10px] font-mono ${
+                                  unrealizedPct >= 0
+                                    ? "text-green-600"
+                                    : "text-red-600"
+                                }`}
+                              >
+                                {unrealizedPct >= 0 ? "+" : ""}
+                                {unrealizedPct.toFixed(1)}%
+                              </div>
+                            </>
+                          ) : (
+                            <span className="text-sm font-mono text-neutral-600">
+                              —
+                            </span>
+                          )}
                         </div>
                       </div>
                     </div>
