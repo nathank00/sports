@@ -460,23 +460,20 @@ export default function AutopilotDashboard() {
       return;
     }
 
-    // Determine limit price: model_prob - edge_threshold
-    const modelProb =
+    // Buy at the current Kalshi ask price.
+    // The edge check above already guarantees ask < model_prob - threshold,
+    // so we get the best available price while maintaining minimum edge.
+    const price =
       signal.recommended_action === "BUY_HOME"
-        ? signal.model_home_win_prob
-        : 1 - signal.model_home_win_prob;
+        ? signal.kalshi_home_price
+        : signal.kalshi_away_price;
 
-    const limitPrice = modelProb - currentSettings.edgeThreshold / 100;
-
-    if (limitPrice <= 0 || limitPrice >= 1) {
-      addLog(
-        `${gameLabel}: Invalid limit price ${(limitPrice * 100).toFixed(0)}c (model=${(modelProb * 100).toFixed(0)}c - ${currentSettings.edgeThreshold}%)`,
-        "skip"
-      );
+    if (!price || price <= 0 || price >= 1) {
+      addLog(`${gameLabel}: Invalid Kalshi price (${price})`, "skip");
       return;
     }
 
-    const contracts = computeContractCount(currentSettings, limitPrice);
+    const contracts = computeContractCount(currentSettings, price);
 
     // Check cumulative per-game exposure cap using Kalshi positions (source of truth)
     const currentExposure = getGameExposure(
@@ -484,7 +481,7 @@ export default function AutopilotDashboard() {
       signal.home_team,
       signal.away_team
     );
-    const newExposure = contracts * limitPrice;
+    const newExposure = contracts * price;
     if (currentExposure + newExposure > currentSettings.maxExposurePerGame) {
       addLog(
         `${gameLabel}: Exposure cap — $${currentExposure.toFixed(2)} existing + $${newExposure.toFixed(2)} new > $${currentSettings.maxExposurePerGame} max`,
@@ -494,23 +491,23 @@ export default function AutopilotDashboard() {
     }
 
     addLog(
-      `${gameLabel}: Placing ${signal.recommended_action} x${contracts} @ limit ${(limitPrice * 100).toFixed(0)}c (model=${(modelProb * 100).toFixed(0)}c - ${currentSettings.edgeThreshold}% threshold)`,
+      `${gameLabel}: Placing ${signal.recommended_action} x${contracts} @ ${(price * 100).toFixed(0)}c (edge=${edge.toFixed(1)}%)`,
       "info"
     );
 
-    // Execute — limit order at (model_prob - threshold)
+    // Execute — limit order at current Kalshi ask (fills at this price or better)
     try {
       const result = await placeOrder(
         signal.recommended_ticker,
         "yes",
         contracts,
-        limitPrice.toFixed(2)
+        price.toFixed(2)
       );
 
       lastExecutionTime.current.set(signal.game_id, now);
 
       addLog(
-        `${gameLabel}: ORDER ${result.status} — ${signal.recommended_ticker} x${contracts} @ ${(limitPrice * 100).toFixed(0)}c | fill=${result.fillCount ?? "?"}`,
+        `${gameLabel}: ORDER ${result.status} — ${signal.recommended_ticker} x${contracts} @ ${(price * 100).toFixed(0)}c | fill=${result.fillCount ?? "?"}`,
         result.fillCount && result.fillCount > 0 ? "trade" : "info"
       );
     } catch (e) {
