@@ -557,21 +557,32 @@ export default function AutopilotDashboard() {
 
   /**
    * Compute how far into a game we are as a single number (higher = further along).
-   * Total regulation = 4 quarters × 720s = 2880s.
-   * elapsed = (2880 - seconds_remaining) for regulation, plus 300 per OT period.
-   * Returns 0 for pregame, negative for completed (so they sort last).
+   *
+   * Each regulation quarter = 720s. Elapsed within the current period =
+   * (period_length - seconds_remaining). We sum completed periods + current
+   * period progress so Q4 10:05 always beats Q2 0:00.
+   *
+   * Returns 0 for pregame.
    */
   const getGameProgress = (game: AutopilotGame): number => {
     if (!game.latestSignal) return 0; // pregame
-    const s = game.latestSignal;
-    // Total seconds in regulation
-    const totalRegulation = 2880;
-    const elapsed = totalRegulation - s.seconds_remaining;
-    // Add extra time for overtime periods (each OT = 300s)
-    if (s.period > 4) {
-      return totalRegulation + (s.period - 4) * 300 + (300 - s.seconds_remaining);
+    const { period, seconds_remaining } = game.latestSignal;
+
+    const quarterLength = 720; // 12 min regulation quarter
+    const otLength = 300; // 5 min OT period
+
+    if (period <= 4) {
+      // Regulation: completed quarters + progress in current quarter
+      const completedQuarters = (period - 1) * quarterLength;
+      const currentProgress = quarterLength - seconds_remaining;
+      return completedQuarters + currentProgress;
     }
-    return elapsed;
+
+    // Overtime: all 4 regulation quarters done + completed OT periods + current OT progress
+    const regulation = 4 * quarterLength;
+    const completedOT = (period - 5) * otLength;
+    const currentOTProgress = otLength - seconds_remaining;
+    return regulation + completedOT + currentOTProgress;
   };
 
   const gameList = Array.from(games.values()).sort((a, b) => {
