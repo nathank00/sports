@@ -1,12 +1,18 @@
 "use client";
 
 import { useState } from "react";
-import type { AutopilotGame, PositionItem } from "@/lib/types";
+import type { AutopilotGame, AutopilotPosition } from "@/lib/types";
 
 interface Props {
   game: AutopilotGame;
-  positions: PositionItem[];
+  position: AutopilotPosition | null;
   edgeThreshold: number;
+  onManualExit: (position: AutopilotPosition) => void;
+  onUpdateTpSl: (
+    eventId: string,
+    takeProfitPrice: number,
+    stopLossPrice: number
+  ) => void;
 }
 
 function formatClock(period: number, secondsRemaining: number): string {
@@ -45,71 +51,246 @@ function formatStartTime(iso: string): string {
   }
 }
 
-// ── Positions section (shared between pregame and live) ────────────────
+// ── Position state badge ─────────────────────────────────────────────
 
-function PositionsSection({
-  positions,
-  currentHomePrice,
-  currentAwayPrice,
-  homeTeam,
-}: {
-  positions: PositionItem[];
-  currentHomePrice?: number | null;
-  currentAwayPrice?: number | null;
-  homeTeam?: string;
-}) {
-  if (positions.length === 0) return null;
+function PositionBadge({ state }: { state: string }) {
+  const config: Record<string, { bg: string; text: string; label: string }> = {
+    FLAT: { bg: "bg-neutral-800", text: "text-neutral-500", label: "FLAT" },
+    PENDING_ENTRY: {
+      bg: "bg-yellow-900/40",
+      text: "text-yellow-400",
+      label: "PENDING",
+    },
+    LONG_HOME: {
+      bg: "bg-green-900/40",
+      text: "text-green-400",
+      label: "LONG HOME",
+    },
+    LONG_AWAY: {
+      bg: "bg-green-900/40",
+      text: "text-green-400",
+      label: "LONG AWAY",
+    },
+    EXITING: {
+      bg: "bg-blue-900/40",
+      text: "text-blue-400",
+      label: "EXITING",
+    },
+    LOCKED: {
+      bg: "bg-neutral-800",
+      text: "text-neutral-400",
+      label: "LOCKED",
+    },
+  };
+
+  const c = config[state] || config.FLAT;
 
   return (
-    <div className="text-xs mb-2 py-1.5 px-2 rounded bg-neutral-800/50 border border-neutral-800">
-      <p className="text-neutral-500 mb-1">Positions</p>
-      {positions.map((pos) => {
-        const contracts = Math.abs(pos.position);
-        const avgPrice =
-          contracts > 0 ? pos.totalTraded / contracts : 0;
+    <span
+      className={`text-xs font-medium px-2 py-0.5 rounded border ${c.bg} ${c.text} border-current/20`}
+    >
+      {c.label}
+    </span>
+  );
+}
 
-        // Determine current market price for this side
-        const suffix = pos.ticker.split("-").pop() ?? "";
-        const isHomeSide = homeTeam && suffix === homeTeam;
-        const currentPrice = isHomeSide ? currentHomePrice : currentAwayPrice;
+// ── Position details section ─────────────────────────────────────────
 
-        // Unrealized P&L: (current_price - avg_entry) * contracts
-        const unrealizedPnl =
-          currentPrice && contracts > 0
-            ? (currentPrice - avgPrice) * contracts
-            : null;
+function PositionSection({
+  position,
+  currentHomePrice,
+  currentAwayPrice,
+  onManualExit,
+  onUpdateTpSl,
+}: {
+  position: AutopilotPosition;
+  currentHomePrice?: number | null;
+  currentAwayPrice?: number | null;
+  onManualExit: (position: AutopilotPosition) => void;
+  onUpdateTpSl: (
+    eventId: string,
+    takeProfitPrice: number,
+    stopLossPrice: number
+  ) => void;
+}) {
+  const [editingTpSl, setEditingTpSl] = useState(false);
+  const [tpInput, setTpInput] = useState("");
+  const [slInput, setSlInput] = useState("");
 
-        return (
-          <div
-            key={pos.ticker}
-            className="flex items-center justify-between py-0.5"
+  const isLong =
+    position.state === "LONG_HOME" || position.state === "LONG_AWAY";
+  const isLocked = position.state === "LOCKED";
+  const isPending = position.state === "PENDING_ENTRY";
+  const isExiting = position.state === "EXITING";
+
+  // Current market price for this side
+  const currentPrice =
+    position.side === "HOME" ? currentHomePrice : currentAwayPrice;
+
+  // Unrealized P&L
+  const unrealizedPnl =
+    isLong &&
+    position.entry_price != null &&
+    position.quantity != null &&
+    currentPrice != null
+      ? (currentPrice - position.entry_price) * position.quantity
+      : null;
+
+  // Don't render anything for FLAT positions
+  if (position.state === "FLAT") return null;
+
+  return (
+    <div className="text-xs mb-2 py-2 px-2 rounded bg-neutral-800/50 border border-neutral-800">
+      {/* Header row: badge + side + EXIT button */}
+      <div className="flex items-center justify-between mb-1">
+        <div className="flex items-center gap-2">
+          <PositionBadge state={position.state} />
+          {position.side && (
+            <span className="text-neutral-400">{position.side} YES</span>
+          )}
+        </div>
+        {isLong && (
+          <button
+            onClick={() => onManualExit(position)}
+            className="text-xs font-medium px-2 py-0.5 rounded bg-red-900/40 text-red-400 border border-red-800 hover:bg-red-900/60 transition-colors"
           >
-            <div className="flex items-center gap-2">
-              <span className="text-neutral-400 font-medium">{suffix}</span>
-              <span className="text-neutral-300 font-mono">
-                {contracts}x @ {(avgPrice * 100).toFixed(0)}c
+            EXIT
+          </button>
+        )}
+      </div>
+
+      {/* Entry details (for LONG, EXITING, and LOCKED states) */}
+      {(isLong || isLocked || isExiting) && position.entry_price != null && (
+        <div className="flex items-center justify-between py-0.5">
+          <span className="text-neutral-500">
+            {position.quantity}x @ {(position.entry_price * 100).toFixed(0)}c
+          </span>
+          <div className="flex items-center gap-2">
+            {unrealizedPnl != null && (
+              <span
+                className={`font-mono font-medium ${
+                  unrealizedPnl >= 0 ? "text-green-400" : "text-red-400"
+                }`}
+              >
+                {unrealizedPnl >= 0 ? "+" : ""}${unrealizedPnl.toFixed(2)}
+              </span>
+            )}
+            {currentPrice != null && (
+              <span className="text-neutral-600">
+                now {(currentPrice * 100).toFixed(0)}c
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* TP/SL levels */}
+      {isLong &&
+        position.take_profit_price != null &&
+        position.stop_loss_price != null && (
+          <div className="flex items-center justify-between py-0.5 mt-0.5">
+            <div className="flex gap-3">
+              <span className="text-green-600">
+                TP: {(position.take_profit_price * 100).toFixed(0)}c
+              </span>
+              <span className="text-red-600">
+                SL: {(position.stop_loss_price * 100).toFixed(0)}c
               </span>
             </div>
-            <div className="flex items-center gap-2">
-              {unrealizedPnl != null && (
-                <span
-                  className={`font-mono font-medium ${
-                    unrealizedPnl >= 0 ? "text-green-400" : "text-red-400"
-                  }`}
-                >
-                  {unrealizedPnl >= 0 ? "+" : ""}
-                  {unrealizedPnl.toFixed(2)}
-                </span>
-              )}
-              {currentPrice != null && (
-                <span className="text-neutral-600">
-                  now {(currentPrice * 100).toFixed(0)}c
-                </span>
-              )}
-            </div>
+            <button
+              onClick={() => {
+                setEditingTpSl(!editingTpSl);
+                if (!editingTpSl) {
+                  setTpInput(
+                    (position.take_profit_price! * 100).toFixed(0)
+                  );
+                  setSlInput(
+                    (position.stop_loss_price! * 100).toFixed(0)
+                  );
+                }
+              }}
+              className="text-neutral-600 hover:text-neutral-400"
+            >
+              {editingTpSl ? "cancel" : "edit"}
+            </button>
           </div>
-        );
-      })}
+        )}
+
+      {/* TP/SL editing inputs */}
+      {editingTpSl && isLong && (
+        <div className="flex items-center gap-2 mt-1">
+          <div className="flex items-center gap-1">
+            <label className="text-neutral-600">TP:</label>
+            <input
+              type="number"
+              value={tpInput}
+              onChange={(e) => setTpInput(e.target.value)}
+              className="w-14 bg-neutral-900 border border-neutral-700 rounded px-1 py-0.5 text-white text-xs"
+              step="1"
+            />
+            <span className="text-neutral-600">c</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <label className="text-neutral-600">SL:</label>
+            <input
+              type="number"
+              value={slInput}
+              onChange={(e) => setSlInput(e.target.value)}
+              className="w-14 bg-neutral-900 border border-neutral-700 rounded px-1 py-0.5 text-white text-xs"
+              step="1"
+            />
+            <span className="text-neutral-600">c</span>
+          </div>
+          <button
+            onClick={() => {
+              const tp = Number(tpInput) / 100;
+              const sl = Number(slInput) / 100;
+              if (tp > 0 && sl > 0) {
+                onUpdateTpSl(position.event_id, tp, sl);
+                setEditingTpSl(false);
+              }
+            }}
+            className="text-green-500 hover:text-green-400 font-medium"
+          >
+            save
+          </button>
+        </div>
+      )}
+
+      {/* Pending intent info */}
+      {isPending && position.intent_price != null && (
+        <div className="text-yellow-400/70 py-0.5 animate-pulse">
+          Intent: {position.intent_contracts}x @{" "}
+          {(position.intent_price * 100).toFixed(0)}c — placing order...
+        </div>
+      )}
+
+      {/* Locked (completed) position with realized P&L */}
+      {isLocked && position.realized_pnl != null && (
+        <div className="flex items-center justify-between py-0.5 mt-0.5">
+          <span className="text-neutral-500">
+            Exited @{" "}
+            {position.exit_price != null
+              ? `${(position.exit_price * 100).toFixed(0)}c`
+              : "?"}
+          </span>
+          <span
+            className={`font-mono font-medium ${
+              position.realized_pnl >= 0 ? "text-green-400" : "text-red-400"
+            }`}
+          >
+            {position.realized_pnl >= 0 ? "+" : ""}$
+            {position.realized_pnl.toFixed(2)}
+          </span>
+        </div>
+      )}
+
+      {/* Exiting state */}
+      {isExiting && (
+        <div className="text-blue-400 py-0.5 animate-pulse">
+          Placing sell order...
+        </div>
+      )}
     </div>
   );
 }
@@ -118,10 +299,18 @@ function PositionsSection({
 
 function PregameCard({
   game,
-  positions,
+  position,
+  onManualExit,
+  onUpdateTpSl,
 }: {
   game: AutopilotGame;
-  positions: PositionItem[];
+  position: AutopilotPosition | null;
+  onManualExit: (position: AutopilotPosition) => void;
+  onUpdateTpSl: (
+    eventId: string,
+    tp: number,
+    sl: number
+  ) => void;
 }) {
   const homePrice = game.kalshiHomePrice;
   const awayPrice = game.kalshiAwayPrice;
@@ -173,19 +362,23 @@ function PregameCard({
         </div>
       )}
 
-      {/* Show single-side price if only one is available */}
+      {/* No market prices yet */}
       {homePrice == null && awayPrice == null && (
         <div className="mb-3 text-xs text-neutral-600">
           Kalshi markets not yet available
         </div>
       )}
 
-      <PositionsSection
-        positions={positions}
-        currentHomePrice={homePrice}
-        currentAwayPrice={awayPrice}
-        homeTeam={game.homeTeam}
-      />
+      {/* Position section */}
+      {position && (
+        <PositionSection
+          position={position}
+          currentHomePrice={homePrice}
+          currentAwayPrice={awayPrice}
+          onManualExit={onManualExit}
+          onUpdateTpSl={onUpdateTpSl}
+        />
+      )}
 
       <div className="text-xs text-neutral-600 mt-1">
         Model signals will appear when the game starts
@@ -198,12 +391,20 @@ function PregameCard({
 
 function LiveCard({
   game,
-  positions,
+  position,
   edgeThreshold,
+  onManualExit,
+  onUpdateTpSl,
 }: {
   game: AutopilotGame;
-  positions: PositionItem[];
+  position: AutopilotPosition | null;
   edgeThreshold: number;
+  onManualExit: (position: AutopilotPosition) => void;
+  onUpdateTpSl: (
+    eventId: string,
+    tp: number,
+    sl: number
+  ) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const s = game.latestSignal!;
@@ -302,12 +503,16 @@ function LiveCard({
         </div>
       )}
 
-      <PositionsSection
-        positions={positions}
-        currentHomePrice={s.kalshi_home_price}
-        currentAwayPrice={s.kalshi_away_price}
-        homeTeam={s.home_team}
-      />
+      {/* Position section */}
+      {position && (
+        <PositionSection
+          position={position}
+          currentHomePrice={s.kalshi_home_price}
+          currentAwayPrice={s.kalshi_away_price}
+          onManualExit={onManualExit}
+          onUpdateTpSl={onUpdateTpSl}
+        />
+      )}
 
       {/* Expand for signal history */}
       {game.signals.length > 0 && (
@@ -338,13 +543,15 @@ function LiveCard({
               <span className="text-neutral-300">
                 P(H)={probBar(sig.model_home_win_prob)}
               </span>
-              <span className={actionColor(
-                sig.recommended_action !== "NO_TRADE" &&
-                sig.edge_vs_kalshi != null &&
-                sig.edge_vs_kalshi < edgeThreshold
-                  ? "NO_TRADE"
-                  : sig.recommended_action
-              )}>
+              <span
+                className={actionColor(
+                  sig.recommended_action !== "NO_TRADE" &&
+                    sig.edge_vs_kalshi != null &&
+                    sig.edge_vs_kalshi < edgeThreshold
+                    ? "NO_TRADE"
+                    : sig.recommended_action
+                )}
+              >
                 {sig.recommended_action !== "NO_TRADE" &&
                 sig.edge_vs_kalshi != null &&
                 sig.edge_vs_kalshi < edgeThreshold
@@ -361,9 +568,30 @@ function LiveCard({
 
 // ── Main export ────────────────────────────────────────────────────────
 
-export default function AutopilotGameCard({ game, positions, edgeThreshold }: Props) {
+export default function AutopilotGameCard({
+  game,
+  position,
+  edgeThreshold,
+  onManualExit,
+  onUpdateTpSl,
+}: Props) {
   if (game.latestSignal) {
-    return <LiveCard game={game} positions={positions} edgeThreshold={edgeThreshold} />;
+    return (
+      <LiveCard
+        game={game}
+        position={position}
+        edgeThreshold={edgeThreshold}
+        onManualExit={onManualExit}
+        onUpdateTpSl={onUpdateTpSl}
+      />
+    );
   }
-  return <PregameCard game={game} positions={positions} />;
+  return (
+    <PregameCard
+      game={game}
+      position={position}
+      onManualExit={onManualExit}
+      onUpdateTpSl={onUpdateTpSl}
+    />
+  );
 }

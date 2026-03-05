@@ -27,5 +27,5 @@ export default async function AutopilotPage() {
     return <Paywall userEmail={user.email ?? ""} product="autopilot" />;
   }
 
-  return <AutopilotDashboard />;
+  return <AutopilotDashboard userId={user.id} />;
 }

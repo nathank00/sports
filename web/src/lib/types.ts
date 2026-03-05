@@ -190,7 +190,7 @@ export interface AutopilotExecution {
   fillCount: number | null;
 }
 
-/** Autopilot settings (persisted in localStorage). */
+/** Autopilot settings (persisted in localStorage — legacy, migrating to Supabase). */
 export interface AutopilotSettings {
   autoExecuteEnabled: boolean;
   edgeThreshold: number;
@@ -199,4 +199,73 @@ export interface AutopilotSettings {
   cooldownSeconds: number;
   maxContractsPerBet: number;
   maxExposurePerGame: number;
+}
+
+// ── Autopilot v2 types (position-based architecture) ─────────────────
+
+/** Position state machine states. */
+export type PositionState =
+  | "FLAT"
+  | "PENDING_ENTRY"
+  | "LONG_HOME"
+  | "LONG_AWAY"
+  | "EXITING"
+  | "LOCKED";
+
+/** A managed position for one event (one row in autopilot_positions). */
+export interface AutopilotPosition {
+  id: number;
+  user_id: string;
+  event_id: string;
+  game_id: string;
+  state: PositionState;
+  side: "HOME" | "AWAY" | null;
+  ticker: string | null;
+  home_team: string;
+  away_team: string;
+  /** Intent fields — set by backend when state → PENDING_ENTRY */
+  intent_price: number | null;
+  intent_contracts: number | null;
+  intent_side: string | null;
+  intent_created_at: string | null;
+  /** Fill fields — set by frontend on order fill */
+  entry_price: number | null;
+  quantity: number | null;
+  entry_timestamp: string | null;
+  /** Exit thresholds — set on entry, can be overridden per-game */
+  take_profit_price: number | null;
+  stop_loss_price: number | null;
+  /** Exit results — set by frontend on exit fill */
+  exit_price: number | null;
+  exit_timestamp: string | null;
+  realized_pnl: number | null;
+  /** Cooldown after exit */
+  cooldown_until: string | null;
+  updated_at: string;
+}
+
+/** Autopilot settings (persisted in Supabase, per-user). */
+export interface AutopilotSettingsV2 {
+  user_id: string;
+  auto_execute_enabled: boolean;
+  edge_threshold: number;
+  take_profit: number;
+  stop_loss: number;
+  sizing_mode: SizingMode;
+  bet_amount: number;
+  cooldown_seconds: number;
+  max_contracts_per_bet: number;
+  max_exposure_per_game: number;
+  updated_at: string;
+}
+
+/** A persistent log entry (one row in autopilot_logs). */
+export interface AutopilotLog {
+  id: number;
+  user_id: string;
+  timestamp: string;
+  event_id: string | null;
+  level: "INFO" | "BLOCKED" | "TRADE" | "EXIT" | "SETTINGS";
+  message: string;
+  metadata: Record<string, unknown> | null;
 }

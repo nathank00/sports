@@ -60,8 +60,8 @@ def run_cleanup(target_date: str | None = None) -> None:
     date_str = dt.strftime("%Y-%m-%d")
     espn_date = dt.strftime("%Y%m%d")
 
-    # Today's midnight ET as the cutoff for signal deletion
-    today_midnight_et = now_et.replace(hour=0, minute=0, second=0, microsecond=0)
+    # 7 AM ET as the cutoff for signal deletion (matches game day boundary)
+    today_midnight_et = now_et.replace(hour=7, minute=0, second=0, microsecond=0)
     cutoff_utc = today_midnight_et.astimezone(ZoneInfo("UTC")).isoformat()
 
     logger.info(f"Cleanup target date: {date_str}")
@@ -184,12 +184,87 @@ def run_cleanup(target_date: str | None = None) -> None:
 
     logger.info(f"  Deleted {deleted} old signals")
 
+    # ── Step 6: Reset stale positions ─────────────────────────────────
+    stale_positions_reset = 0
+    try:
+        # Reset PENDING_ENTRY or EXITING positions from previous days to FLAT
+        stale_result = (
+            supabase.table("autopilot_positions")
+            .update({
+                "state": "FLAT",
+                "side": None,
+                "ticker": None,
+                "intent_price": None,
+                "intent_contracts": None,
+                "intent_side": None,
+                "intent_created_at": None,
+                "updated_at": datetime.now(ZoneInfo("UTC")).isoformat(),
+            })
+            .lt("updated_at", cutoff_utc)
+            .in_("state", ["PENDING_ENTRY", "EXITING"])
+            .execute()
+        )
+        stale_positions_reset = len(stale_result.data) if stale_result.data else 0
+        if stale_positions_reset > 0:
+            logger.info(f"  Reset {stale_positions_reset} stale PENDING_ENTRY/EXITING positions to FLAT")
+    except Exception as e:
+        logger.error(f"Failed to reset stale positions: {e}")
+
+    # Reset LOCKED positions older than the cutoff back to FLAT (ready for new game day)
+    locked_reset = 0
+    try:
+        locked_result = (
+            supabase.table("autopilot_positions")
+            .update({
+                "state": "FLAT",
+                "side": None,
+                "ticker": None,
+                "entry_price": None,
+                "quantity": None,
+                "entry_timestamp": None,
+                "take_profit_price": None,
+                "stop_loss_price": None,
+                "exit_price": None,
+                "exit_timestamp": None,
+                "realized_pnl": None,
+                "cooldown_until": None,
+                "updated_at": datetime.now(ZoneInfo("UTC")).isoformat(),
+            })
+            .lt("updated_at", cutoff_utc)
+            .eq("state", "LOCKED")
+            .execute()
+        )
+        locked_reset = len(locked_result.data) if locked_result.data else 0
+        if locked_reset > 0:
+            logger.info(f"  Reset {locked_reset} LOCKED positions to FLAT (new game day)")
+    except Exception as e:
+        logger.error(f"Failed to reset locked positions: {e}")
+
+    # ── Step 7: Prune old logs (keep last 7 days) ──────────────────────
+    logs_deleted = 0
+    try:
+        log_cutoff = (now_et - timedelta(days=7)).astimezone(ZoneInfo("UTC")).isoformat()
+        log_result = (
+            supabase.table("autopilot_logs")
+            .delete()
+            .lt("timestamp", log_cutoff)
+            .execute()
+        )
+        logs_deleted = len(log_result.data) if log_result.data else 0
+        if logs_deleted > 0:
+            logger.info(f"  Deleted {logs_deleted} old log entries (>7 days)")
+    except Exception as e:
+        logger.error(f"Failed to prune old logs: {e}")
+
     # ── Summary ──────────────────────────────────────────────────────
     logger.info("Cleanup complete:")
     logger.info(f"  Date: {date_str}")
     logger.info(f"  Games processed: {len(matched_games)}")
     logger.info(f"  Training snapshots upserted: {len(deduped) if snapshots else 0}")
     logger.info(f"  Signals deleted: {deleted}")
+    logger.info(f"  Stale positions reset: {stale_positions_reset}")
+    logger.info(f"  Locked positions reset: {locked_reset}")
+    logger.info(f"  Old logs pruned: {logs_deleted}")
 
 
 def main():

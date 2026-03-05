@@ -128,6 +128,15 @@ def evaluate_signal(
 
     model_away_prob = 1.0 - model_home_prob
 
+    # Filter: don't trade in first 3 minutes of game
+    quarter_length = 720.0
+    elapsed = (period - 1) * quarter_length + (quarter_length - seconds_remaining)
+    if elapsed < 180:
+        return TradeSignal(
+            recommended_action="NO_TRADE",
+            reason=f"First 3 minutes of game ({elapsed:.0f}s elapsed)",
+        )
+
     # Filter: don't trade in final 3 minutes of Q4 or overtime
     if period >= 4 and seconds_remaining < config.min_seconds_remaining:
         return TradeSignal(

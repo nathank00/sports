@@ -21,6 +21,7 @@ from autopilot.src.trading.decision import (
     evaluate_signal,
     ABBR_TO_TEAM,
 )
+from autopilot.src.trading.position_manager import PositionManager, UserSettings
 from autopilot.src.ingest.espn_live import (
     fetch_live_scoreboard,
     fetch_live_game_detail,
@@ -57,6 +58,7 @@ class Orchestrator:
         self.model = model
         self.config = config or TradingConfig()
         self.games: dict[str, TrackedGame] = {}  # espn_game_id -> TrackedGame
+        self.position_manager = PositionManager()
         self.running = False
         self.last_active_time = time.monotonic()
 
@@ -107,11 +109,18 @@ class Orchestrator:
         if not active:
             return False
 
-        # 2. Process each active game
+        # 2. Clear user cache and expire stale intents once per tick
+        self.position_manager.clear_user_cache()
+        try:
+            self.position_manager.expire_stale_intents()
+        except Exception as e:
+            logger.error(f"Failed to expire stale intents: {e}")
+
+        # 3. Process each active game
         tasks = [self._process_game(session, game) for game in active]
         await asyncio.gather(*tasks, return_exceptions=True)
 
-        # 3. Remove finished games
+        # 4. Remove finished games
         active_ids = {g["espn_game_id"] for g in active}
         finished = [gid for gid in self.games if gid not in active_ids]
         for gid in finished:
@@ -244,6 +253,40 @@ class Orchestrator:
             f"Q{period} {seconds_remaining:.0f}s | "
             f"P(home)={model_prob:.1%} | edge={edge_str} | {action}{reason_str}"
         )
+
+        # Evaluate trade intents for each active user
+        if signal.recommended_action != "NO_TRADE":
+            active_users = self.position_manager.get_active_users()
+            # Build event_id from the signal's recommended ticker
+            # e.g., "KXNBAGAME-05MAR26INDBOS-IND" → event = "KXNBAGAME-05MAR26INDBOS"
+            event_id = None
+            if signal.recommended_ticker:
+                parts = signal.recommended_ticker.rsplit("-", 1)
+                if len(parts) == 2:
+                    event_id = parts[0]
+
+            if event_id and active_users:
+                game_id = tracker.espn_game_id or tracker.nba_game_id
+                for user_row in active_users:
+                    try:
+                        settings = UserSettings.from_row(user_row)
+                        self.position_manager.process_signal(
+                            user_settings=settings,
+                            signal=signal,
+                            game_id=game_id,
+                            event_id=event_id,
+                            home_team=home_team,
+                            away_team=away_team,
+                            period=period,
+                            seconds_remaining=seconds_remaining,
+                            home_score=home_score,
+                            away_score=away_score,
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f"Position manager error for user "
+                            f"{user_row.get('user_id', '?')[:8]}...: {e}"
+                        )
 
     async def _fetch_kalshi_markets(self, session: aiohttp.ClientSession) -> list[dict]:
         """Fetch open NBA markets from Kalshi.

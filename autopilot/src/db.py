@@ -136,3 +136,97 @@ def insert_rows(table: str, records: list[dict], show_progress: bool = True) -> 
             logger.error(f"Insert batch failed: {e}")
 
     return success_count
+
+
+# ── Autopilot position management helpers ──────────────────────────────
+
+
+def fetch_active_users() -> list[dict]:
+    """Fetch all users with auto_execute_enabled = True from autopilot_settings."""
+    try:
+        result = (
+            supabase.table("autopilot_settings")
+            .select("*")
+            .eq("auto_execute_enabled", True)
+            .execute()
+        )
+        return result.data or []
+    except Exception as e:
+        logger.error(f"Failed to fetch active users: {e}")
+        return []
+
+
+def fetch_position(user_id: str, event_id: str) -> dict | None:
+    """Fetch a user's position for a specific event."""
+    try:
+        result = (
+            supabase.table("autopilot_positions")
+            .select("*")
+            .eq("user_id", user_id)
+            .eq("event_id", event_id)
+            .limit(1)
+            .execute()
+        )
+        rows = result.data or []
+        return rows[0] if rows else None
+    except Exception as e:
+        logger.error(f"Failed to fetch position for {user_id}/{event_id}: {e}")
+        return None
+
+
+def upsert_position(user_id: str, event_id: str, data: dict) -> None:
+    """Upsert a position row (creates if absent, updates if exists).
+
+    Always sets user_id and event_id on the record.
+    Uses ON CONFLICT (user_id, event_id).
+    """
+    record = {**data, "user_id": user_id, "event_id": event_id}
+    try:
+        supabase.table("autopilot_positions").upsert(
+            record, on_conflict="user_id,event_id"
+        ).execute()
+    except Exception as e:
+        logger.error(f"Failed to upsert position for {user_id}/{event_id}: {e}")
+
+
+def fetch_stale_pending_intents(max_age_seconds: int = 35) -> list[dict]:
+    """Find PENDING_ENTRY positions older than max_age_seconds."""
+    from datetime import datetime, timezone, timedelta
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)).isoformat()
+    try:
+        result = (
+            supabase.table("autopilot_positions")
+            .select("*")
+            .eq("state", "PENDING_ENTRY")
+            .lt("intent_created_at", cutoff)
+            .execute()
+        )
+        return result.data or []
+    except Exception as e:
+        logger.error(f"Failed to fetch stale intents: {e}")
+        return []
+
+
+def write_log(
+    user_id: str,
+    level: str,
+    message: str,
+    event_id: str | None = None,
+    metadata: dict | None = None,
+) -> None:
+    """Insert a row into autopilot_logs."""
+    record: dict = {
+        "user_id": user_id,
+        "level": level,
+        "message": message,
+    }
+    if event_id:
+        record["event_id"] = event_id
+    if metadata:
+        record["metadata"] = metadata
+
+    try:
+        supabase.table("autopilot_logs").insert(record).execute()
+    except Exception as e:
+        logger.error(f"Failed to write log: {e}")

@@ -1,0 +1,60 @@
+create table public.autopilot_positions (
+  id bigint generated always as identity primary key,
+  user_id uuid not null references auth.users(id),
+  event_id text not null,
+  game_id text not null,
+
+  -- Position state machine
+  state text not null default 'FLAT'
+    check (state in ('FLAT', 'PENDING_ENTRY', 'LONG_HOME', 'LONG_AWAY', 'EXITING', 'LOCKED')),
+  side text null check (side in ('HOME', 'AWAY')),
+  ticker text null,
+  home_team text not null,
+  away_team text not null,
+
+  -- Intent fields (set by backend when state -> PENDING_ENTRY)
+  intent_price real null,
+  intent_contracts integer null,
+  intent_side text null,
+  intent_created_at timestamp with time zone null,
+
+  -- Fill fields (set by frontend on order fill)
+  entry_price real null,
+  quantity integer null,
+  entry_timestamp timestamp with time zone null,
+
+  -- Exit thresholds (set on entry, can be overridden per-game)
+  take_profit_price real null,
+  stop_loss_price real null,
+
+  -- Exit results (set by frontend on exit fill)
+  exit_price real null,
+  exit_timestamp timestamp with time zone null,
+  realized_pnl real null,
+
+  -- Cooldown
+  cooldown_until timestamp with time zone null,
+
+  updated_at timestamp with time zone not null default now(),
+
+  -- One position per user per event
+  constraint unique_user_event unique (user_id, event_id)
+);
+
+create index idx_positions_user_id on public.autopilot_positions (user_id);
+create index idx_positions_state on public.autopilot_positions (state);
+create index idx_positions_game_id on public.autopilot_positions (game_id);
+
+-- RLS: users can read and update own positions; backend (service role) bypasses RLS
+alter table public.autopilot_positions enable row level security;
+
+create policy "Users can read own positions"
+  on public.autopilot_positions for select
+  using (auth.uid() = user_id);
+
+create policy "Users can update own positions"
+  on public.autopilot_positions for update
+  using (auth.uid() = user_id);
+
+-- Enable realtime for position state changes
+alter publication supabase_realtime add table autopilot_positions;

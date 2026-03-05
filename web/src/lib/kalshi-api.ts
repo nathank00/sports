@@ -140,8 +140,8 @@ export async function fetchPositions(): Promise<PositionItem[]> {
 
 /**
  * Fetch settlements (closed positions) within a date range.
- * @param minTs - ISO timestamp for the start of the range
- * @param maxTs - ISO timestamp for the end of the range
+ * @param minTs - Unix epoch seconds (integer string) for the start of the range
+ * @param maxTs - Unix epoch seconds (integer string) for the end of the range
  */
 export async function fetchSettlements(
   minTs?: string,
@@ -162,11 +162,15 @@ export async function fetchSettlements(
       market_result: string;
       yes_count?: number;
       no_count?: number;
+      // revenue is in cents (integer)
       revenue?: number;
-      revenue_dollars?: string;
-      fee_cost?: number;
-      fee_cost_dollars?: string;
+      // fee_cost is a dollar string (e.g., "0.0500")
+      fee_cost?: string;
       settled_time: string;
+      // Additional fields from API
+      yes_total_cost?: number;
+      no_total_cost?: number;
+      value?: number;
     }>;
   };
 
@@ -178,12 +182,10 @@ export async function fetchSettlements(
     marketResult: s.market_result,
     yesCount: s.yes_count ?? 0,
     noCount: s.no_count ?? 0,
-    revenue: s.revenue_dollars
-      ? parseFloat(s.revenue_dollars)
-      : (s.revenue ?? 0) / 100,
-    feesPaid: s.fee_cost_dollars
-      ? parseFloat(s.fee_cost_dollars)
-      : (s.fee_cost ?? 0) / 100,
+    // revenue is cents integer → convert to dollars
+    revenue: (s.revenue ?? 0) / 100,
+    // fee_cost is a dollar string → parse directly
+    feesPaid: s.fee_cost ? parseFloat(s.fee_cost) : 0,
     settledTime: s.settled_time,
   }));
 }
@@ -237,12 +239,15 @@ export async function fetchNbaMarkets(): Promise<KalshiMarket[]> {
 /**
  * Place a limit order on Kalshi with a 30-second expiration.
  * The expiration prevents resting orders from accumulating if the market moves.
+ *
+ * @param action - "buy" to open a position, "sell" to close an existing one
  */
 export async function placeOrder(
   ticker: string,
   side: "yes" | "no",
   count: number,
-  priceDollars: string
+  priceDollars: string,
+  action: "buy" | "sell" = "buy"
 ): Promise<OrderResult> {
   const priceField =
     side === "yes" ? "yes_price_dollars" : "no_price_dollars";
@@ -257,7 +262,7 @@ export async function placeOrder(
     {
       ticker,
       side,
-      action: "buy",
+      action,
       count,
       [priceField]: priceDollars,
       type: "limit",
@@ -284,4 +289,17 @@ export async function placeOrder(
     fillCount: data.order.fill_count ?? null,
     remainingCount: data.order.remaining_count ?? null,
   };
+}
+
+/**
+ * Place a sell order to close an existing position.
+ * Convenience wrapper around placeOrder with action="sell".
+ */
+export async function sellOrder(
+  ticker: string,
+  side: "yes" | "no",
+  count: number,
+  priceDollars: string
+): Promise<OrderResult> {
+  return placeOrder(ticker, side, count, priceDollars, "sell");
 }

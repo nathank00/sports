@@ -1,0 +1,23 @@
+create table public.autopilot_logs (
+  id bigint generated always as identity primary key,
+  user_id uuid not null references auth.users(id),
+
+  timestamp timestamp with time zone not null default now(),
+  event_id text null,
+
+  -- Log level
+  level text not null default 'INFO'
+    check (level in ('INFO', 'BLOCKED', 'TRADE', 'EXIT', 'SETTINGS')),
+
+  message text not null,
+  metadata jsonb null
+);
+
+create index idx_logs_user_id_ts on public.autopilot_logs (user_id, timestamp desc);
+
+-- RLS: users can read own logs
+alter table public.autopilot_logs enable row level security;
+
+create policy "Users can read own logs"
+  on public.autopilot_logs for select
+  using (auth.uid() = user_id);

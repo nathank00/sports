@@ -1,0 +1,38 @@
+create table public.autopilot_settings (
+  user_id uuid primary key references auth.users(id),
+
+  -- Execution control
+  auto_execute_enabled boolean not null default false,
+
+  -- Entry thresholds
+  edge_threshold real not null default 8.0,
+
+  -- Exit thresholds (in dollars, e.g. 0.08 = 8 cents)
+  take_profit real not null default 0.08,
+  stop_loss real not null default 0.05,
+
+  -- Position sizing
+  sizing_mode text not null default 'dollars'
+    check (sizing_mode in ('dollars', 'contracts')),
+  bet_amount real not null default 10,
+  cooldown_seconds integer not null default 60,
+  max_contracts_per_bet integer not null default 20,
+  max_exposure_per_game real not null default 50,
+
+  updated_at timestamp with time zone not null default now()
+);
+
+-- RLS: users can only read/write their own row
+alter table public.autopilot_settings enable row level security;
+
+create policy "Users can read own settings"
+  on public.autopilot_settings for select
+  using (auth.uid() = user_id);
+
+create policy "Users can insert own settings"
+  on public.autopilot_settings for insert
+  with check (auth.uid() = user_id);
+
+create policy "Users can update own settings"
+  on public.autopilot_settings for update
+  using (auth.uid() = user_id);

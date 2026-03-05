@@ -22,21 +22,42 @@ function getTodayET(): string {
   });
 }
 
-/** Convert a YYYY-MM-DD date string to start/end ISO timestamps (ET). */
+/**
+ * Convert a YYYY-MM-DD date string to start/end Unix timestamps (seconds).
+ * Uses the 7 AM ET game day boundary.
+ * Kalshi's settlements API expects min_ts/max_ts as integer epoch seconds.
+ */
 function dateToRange(dateStr: string): { minTs: string; maxTs: string } {
-  // Create timestamps at 5 AM ET (game day boundary) for start,
-  // and 5 AM ET next day for end
-  const d = new Date(dateStr + "T05:00:00");
-  const next = new Date(d);
-  next.setDate(next.getDate() + 1);
+  // Parse date and compute 7 AM ET on that day as a UTC epoch
+  const d = new Date(dateStr + "T00:00:00");
 
-  // Adjust for ET offset (approximate: use the date's own offset)
-  const etOffset = new Date(
-    d.toLocaleString("en-US", { timeZone: "America/New_York" })
-  ).getTime() - new Date(d.toLocaleString("en-US", { timeZone: "UTC" })).getTime();
+  // Get the ET → UTC offset for this date (handles EST/EDT automatically)
+  const etParts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    hour12: false,
+  }).formatToParts(d);
 
-  const minTs = new Date(d.getTime() - etOffset).toISOString();
-  const maxTs = new Date(next.getTime() - etOffset).toISOString();
+  const etHour = parseInt(
+    etParts.find((p) => p.type === "hour")!.value
+  );
+  const utcHour = d.getUTCHours();
+  const etOffsetHours = (utcHour - etHour + 24) % 24; // 5 for EST, 4 for EDT
+
+  // 7 AM ET on the selected date in UTC
+  const startUTC = new Date(d);
+  startUTC.setUTCHours(7 + etOffsetHours, 0, 0, 0);
+
+  // 7 AM ET on the next day in UTC
+  const endUTC = new Date(startUTC);
+  endUTC.setUTCDate(endUTC.getUTCDate() + 1);
+
+  // Kalshi expects Unix epoch seconds (integers), not ISO strings
+  const minTs = Math.floor(startUTC.getTime() / 1000).toString();
+  const maxTs = Math.floor(endUTC.getTime() / 1000).toString();
   return { minTs, maxTs };
 }
 

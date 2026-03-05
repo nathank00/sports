@@ -53,7 +53,7 @@ function getTodayGameDate(): string {
   const etHour = parseInt(parts.find((p) => p.type === "hour")!.value);
 
   const gameDay = new Date(etYear, etMonth - 1, etDay);
-  if (etHour < 5) {
+  if (etHour < 7) {
     gameDay.setDate(gameDay.getDate() - 1);
   }
 
