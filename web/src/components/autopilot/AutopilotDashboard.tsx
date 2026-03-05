@@ -409,15 +409,20 @@ export default function AutopilotDashboard() {
     const lastExec = lastExecutionTime.current.get(signal.game_id) ?? 0;
     if (now - lastExec < currentSettings.cooldownSeconds * 1000) return;
 
-    // Determine price and contracts
-    const price =
+    // Determine limit price: model_prob - edge_threshold
+    // This guarantees at least edgeThreshold% edge on every fill,
+    // while giving enough room for the order to fill even if the
+    // market has moved slightly since the signal was generated.
+    const modelProb =
       signal.recommended_action === "BUY_HOME"
-        ? signal.kalshi_home_price
-        : signal.kalshi_away_price;
+        ? signal.model_home_win_prob
+        : 1 - signal.model_home_win_prob;
 
-    if (!price || price <= 0 || price >= 1) return;
+    const limitPrice = modelProb - currentSettings.edgeThreshold / 100;
 
-    const contracts = computeContractCount(currentSettings, price);
+    if (limitPrice <= 0 || limitPrice >= 1) return;
+
+    const contracts = computeContractCount(currentSettings, limitPrice);
 
     // Check cumulative per-game exposure cap using Kalshi positions (source of truth)
     const currentExposure = getGameExposure(
@@ -425,7 +430,7 @@ export default function AutopilotDashboard() {
       signal.home_team,
       signal.away_team
     );
-    const newExposure = contracts * price;
+    const newExposure = contracts * limitPrice;
     if (currentExposure + newExposure > currentSettings.maxExposurePerGame) {
       console.log(
         `Skipping: would exceed per-game exposure cap ` +
@@ -434,20 +439,21 @@ export default function AutopilotDashboard() {
       return;
     }
 
-    // Execute
+    // Execute — limit order at (model_prob - threshold)
     try {
       const result = await placeOrder(
         signal.recommended_ticker,
         "yes",
         contracts,
-        price.toFixed(2)
+        limitPrice.toFixed(2)
       );
 
       lastExecutionTime.current.set(signal.game_id, now);
 
       console.log(
         `Trade executed: ${signal.recommended_action} ${signal.recommended_ticker} ` +
-          `x${contracts} @ ${(price * 100).toFixed(0)}c | ` +
+          `x${contracts} @ limit ${(limitPrice * 100).toFixed(0)}c ` +
+          `(model=${(modelProb * 100).toFixed(0)}c - ${currentSettings.edgeThreshold}% threshold) | ` +
           `status=${result.status} fill=${result.fillCount ?? "?"}`
       );
     } catch (e) {
