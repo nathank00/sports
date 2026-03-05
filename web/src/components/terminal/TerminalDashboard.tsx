@@ -110,6 +110,25 @@ export default function TerminalDashboard({ onNavigate }: TerminalDashboardProps
     fetchData();
   }, []);
 
+  // Refresh positions + balance every 15s for real-time data
+  useEffect(() => {
+    if (!connected) return;
+    const interval = setInterval(async () => {
+      try {
+        const [balData, posData] = await Promise.all([
+          fetchBalance(),
+          fetchPositions(),
+        ]);
+        setBalance(balData.balance);
+        setPortfolioValue(balData.portfolioValue);
+        setPositions(posData);
+      } catch (e) {
+        console.error("Position refresh failed:", e);
+      }
+    }, 15_000);
+    return () => clearInterval(interval);
+  }, [connected]);
+
   // Fetch settlements when date changes or when connected
   useEffect(() => {
     if (connected) {
@@ -239,62 +258,130 @@ export default function TerminalDashboard({ onNavigate }: TerminalDashboardProps
       {/* Positions dropdown */}
       {positionsOpen && (
         <div className="rounded-lg border border-neutral-800 bg-neutral-900/60 overflow-hidden">
-          <div className="px-4 py-3 border-b border-neutral-800/60">
+          <div className="px-4 py-3 border-b border-neutral-800/60 flex items-center justify-between">
             <h2 className="text-xs uppercase tracking-wider text-neutral-500 font-semibold">
-              Positions
+              Open Positions
             </h2>
+            {positions.length > 0 && (
+              <div className="flex items-center gap-3 text-[10px]">
+                <span className="text-neutral-500">
+                  Cost Basis: ${positions.reduce((s, p) => s + p.totalTraded, 0).toFixed(2)}
+                </span>
+                <span
+                  className={`font-mono font-medium ${
+                    positions.reduce((s, p) => s + p.exposure, 0) >= 0
+                      ? "text-green-400"
+                      : "text-red-400"
+                  }`}
+                >
+                  Unrealized P&L:{" "}
+                  {positions.reduce((s, p) => s + p.exposure, 0) >= 0 ? "+" : ""}
+                  ${positions.reduce((s, p) => s + p.exposure, 0).toFixed(2)}
+                </span>
+              </div>
+            )}
           </div>
           {positions.length === 0 ? (
             <div className="px-4 py-6 text-center text-sm text-neutral-600">
-              No active positions
+              No open positions
             </div>
           ) : (
-            <div className="divide-y divide-neutral-800/60">
-              {positions.map((pos) => {
-                const teamName = parseTeamFromTicker(pos.ticker);
-                const contracts = Math.abs(pos.position);
-                const avgPrice =
-                  contracts > 0 ? pos.totalTraded / contracts : 0;
-                return (
-                  <div
-                    key={pos.ticker}
-                    className="px-4 py-3 hover:bg-neutral-800/30 transition-colors"
-                  >
-                    <div className="flex items-center justify-between mb-1">
-                      <div className="min-w-0">
-                        <span className="text-sm font-medium text-neutral-100">
-                          {teamName || pos.ticker}
-                        </span>
-                        {teamName && (
-                          <span className="ml-2 text-[10px] text-neutral-600 font-mono">
-                            {pos.ticker}
+            <>
+              {/* Column headers */}
+              <div className="px-4 py-1.5 border-b border-neutral-800/40 grid grid-cols-12 gap-2 text-[10px] text-neutral-600 uppercase tracking-wider">
+                <span className="col-span-4">Position</span>
+                <span className="col-span-2 text-right">Qty</span>
+                <span className="col-span-2 text-right">Avg Cost</span>
+                <span className="col-span-2 text-right">Mkt Value</span>
+                <span className="col-span-2 text-right">Unrealized P&L</span>
+              </div>
+              <div className="divide-y divide-neutral-800/60">
+                {positions.map((pos) => {
+                  const teamName = parseTeamFromTicker(pos.ticker);
+                  const qty = Math.abs(pos.position);
+                  const avgCost = qty > 0 ? pos.totalTraded / qty : 0;
+                  const costBasis = pos.totalTraded;
+                  const marketValue = costBasis + pos.exposure;
+                  const unrealizedPnl = pos.exposure;
+                  const unrealizedPct =
+                    costBasis > 0
+                      ? (unrealizedPnl / costBasis) * 100
+                      : 0;
+
+                  return (
+                    <div
+                      key={pos.ticker}
+                      className="px-4 py-3 hover:bg-neutral-800/30 transition-colors"
+                    >
+                      <div className="grid grid-cols-12 gap-2 items-center">
+                        {/* Position name */}
+                        <div className="col-span-4 min-w-0">
+                          <span className="text-sm font-medium text-neutral-100">
+                            {teamName || pos.ticker.split("-").pop()}
                           </span>
-                        )}
+                          <div className="text-[10px] text-neutral-600 font-mono truncate">
+                            {pos.ticker}
+                          </div>
+                        </div>
+
+                        {/* Qty */}
+                        <div className="col-span-2 text-right">
+                          <span className="text-sm font-mono text-neutral-200">
+                            {qty}
+                          </span>
+                        </div>
+
+                        {/* Avg Cost */}
+                        <div className="col-span-2 text-right">
+                          <span className="text-sm font-mono text-neutral-200">
+                            {(avgCost * 100).toFixed(0)}c
+                          </span>
+                          <div className="text-[10px] text-neutral-600 font-mono">
+                            ${costBasis.toFixed(2)}
+                          </div>
+                        </div>
+
+                        {/* Market Value */}
+                        <div className="col-span-2 text-right">
+                          <span className="text-sm font-mono text-neutral-200">
+                            ${marketValue.toFixed(2)}
+                          </span>
+                          {qty > 0 && (
+                            <div className="text-[10px] text-neutral-600 font-mono">
+                              {((marketValue / qty) * 100).toFixed(0)}c/ea
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Unrealized P&L */}
+                        <div className="col-span-2 text-right">
+                          <span
+                            className={`text-sm font-mono font-medium ${
+                              unrealizedPnl >= 0
+                                ? "text-green-400"
+                                : "text-red-400"
+                            }`}
+                          >
+                            {unrealizedPnl >= 0 ? "+" : ""}
+                            ${unrealizedPnl.toFixed(2)}
+                          </span>
+                          <div
+                            className={`text-[10px] font-mono ${
+                              unrealizedPct >= 0
+                                ? "text-green-600"
+                                : "text-red-600"
+                            }`}
+                          >
+                            {unrealizedPct >= 0 ? "+" : ""}
+                            {unrealizedPct.toFixed(1)}%
+                          </div>
+                        </div>
                       </div>
-                      <span
-                        className={`text-sm font-mono font-medium shrink-0 ml-3 ${
-                          pos.exposure >= 0
-                            ? "text-green-400"
-                            : "text-red-400"
-                        }`}
-                      >
-                        {pos.exposure >= 0 ? "+" : "-"}$
-                        {Math.abs(pos.exposure).toFixed(2)}
-                      </span>
                     </div>
-                    <div className="flex gap-4 text-[10px] text-neutral-500">
-                      <span>
-                        {contracts}x @ {(avgPrice * 100).toFixed(0)}c avg
-                      </span>
-                      <span>${pos.totalTraded.toFixed(2)} traded</span>
-                      {pos.restingOrders > 0 && (
-                        <span>Resting: {pos.restingOrders}</span>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            </>
           )}
         </div>
       )}
