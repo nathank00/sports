@@ -115,6 +115,8 @@ export default function AutopilotDashboard({ userId }: Props) {
   const handleNewSignalRef = useRef<(signal: AutopilotSignal) => void>(
     () => {}
   );
+  // Track latest signal timestamp for polling fallback
+  const latestSignalTsRef = useRef<string | null>(null);
 
   // Keep positionsRef in sync for the exit monitor callback
   useEffect(() => {
@@ -336,7 +338,7 @@ export default function AutopilotDashboard({ userId }: Props) {
 
   useEffect(() => {
     fetchScheduledGames();
-    const interval = setInterval(fetchScheduledGames, 60_000);
+    const interval = setInterval(fetchScheduledGames, 30_000);
     return () => clearInterval(interval);
   }, []);
 
@@ -364,6 +366,33 @@ export default function AutopilotDashboard({ userId }: Props) {
     return () => {
       supabase.removeChannel(channel);
     };
+  }, []);
+
+  // ── Signal polling fallback (in case Realtime subscription isn't working) ──
+
+  useEffect(() => {
+    const pollSignals = async () => {
+      const since = latestSignalTsRef.current || getGameDayCutoffUTC();
+      try {
+        const { data } = await supabase
+          .from("autopilot_signals")
+          .select("*")
+          .gt("created_at", since)
+          .order("created_at", { ascending: true })
+          .limit(100);
+
+        if (data && data.length > 0) {
+          for (const signal of data as AutopilotSignal[]) {
+            handleNewSignalRef.current(signal);
+          }
+        }
+      } catch (e) {
+        console.error("Signal poll error:", e);
+      }
+    };
+
+    const interval = setInterval(pollSignals, 15_000);
+    return () => clearInterval(interval);
   }, []);
 
   const fetchScheduledGames = async () => {
@@ -428,6 +457,8 @@ export default function AutopilotDashboard({ userId }: Props) {
       }
 
       if (data && data.length > 0) {
+        // Track latest signal timestamp (data is ordered desc, first is newest)
+        latestSignalTsRef.current = (data[0] as AutopilotSignal).created_at;
         const grouped = groupSignalsByGame(data as AutopilotSignal[]);
         // Merge with existing scheduled games
         setGames((prev) => {
@@ -458,6 +489,11 @@ export default function AutopilotDashboard({ userId }: Props) {
   };
 
   const handleNewSignal = useCallback((signal: AutopilotSignal) => {
+    // Track latest signal timestamp for polling fallback
+    if (!latestSignalTsRef.current || signal.created_at > latestSignalTsRef.current) {
+      latestSignalTsRef.current = signal.created_at;
+    }
+
     setGames((prev) => {
       const next = new Map(prev);
       const existing = next.get(signal.game_id);

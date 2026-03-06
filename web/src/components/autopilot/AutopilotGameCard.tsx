@@ -412,6 +412,10 @@ function LiveCard({
   const homeProb = s.model_home_win_prob;
   const awayProb = 1 - homeProb;
 
+  // Use freshest Kalshi prices: game-level (from API poll every 30s) → signal-level (from backend)
+  const kalshiHomePrice = game.kalshiHomePrice ?? s.kalshi_home_price;
+  const kalshiAwayPrice = game.kalshiAwayPrice ?? s.kalshi_away_price;
+
   // Apply user's edge threshold to determine displayed action
   // Backend uses a 2% floor, but the user may have a higher threshold
   const displayedAction =
@@ -487,19 +491,46 @@ function LiveCard({
         )}
       </div>
 
-      {/* Kalshi prices */}
-      {(s.kalshi_home_price != null || s.kalshi_away_price != null) && (
-        <div className="flex gap-4 text-xs text-neutral-500 mb-2">
-          {s.kalshi_away_price != null && (
+      {/* Kalshi market prices bar */}
+      {(kalshiHomePrice != null || kalshiAwayPrice != null) && (
+        <div className="mb-3">
+          <div className="flex justify-between text-xs text-neutral-600 mb-0.5">
             <span>
-              {s.away_team} Kalshi: {(s.kalshi_away_price * 100).toFixed(0)}c
+              {s.away_team}{" "}
+              {kalshiAwayPrice != null ? probBar(kalshiAwayPrice) : "—"}
             </span>
-          )}
-          {s.kalshi_home_price != null && (
+            <span className="text-[10px] text-neutral-700 uppercase tracking-wide">
+              Kalshi
+            </span>
             <span>
-              {s.home_team} Kalshi: {(s.kalshi_home_price * 100).toFixed(0)}c
+              {kalshiHomePrice != null ? probBar(kalshiHomePrice) : "—"}{" "}
+              {s.home_team}
             </span>
+          </div>
+          {kalshiHomePrice != null && kalshiAwayPrice != null && (
+            <div className="h-1.5 bg-neutral-800 rounded-full overflow-hidden flex">
+              <div
+                className="bg-red-500/30 transition-all duration-500"
+                style={{ width: `${kalshiAwayPrice * 100}%` }}
+              />
+              <div
+                className="bg-blue-500/30 transition-all duration-500"
+                style={{ width: `${kalshiHomePrice * 100}%` }}
+              />
+            </div>
           )}
+          <div className="flex gap-4 text-xs text-neutral-600 mt-1">
+            {kalshiAwayPrice != null && (
+              <span>
+                {s.away_team}: {(kalshiAwayPrice * 100).toFixed(0)}c
+              </span>
+            )}
+            {kalshiHomePrice != null && (
+              <span>
+                {s.home_team}: {(kalshiHomePrice * 100).toFixed(0)}c
+              </span>
+            )}
+          </div>
         </div>
       )}
 
@@ -507,8 +538,8 @@ function LiveCard({
       {position && (
         <PositionSection
           position={position}
-          currentHomePrice={s.kalshi_home_price}
-          currentAwayPrice={s.kalshi_away_price}
+          currentHomePrice={kalshiHomePrice}
+          currentAwayPrice={kalshiAwayPrice}
           onManualExit={onManualExit}
           onUpdateTpSl={onUpdateTpSl}
         />

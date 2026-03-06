@@ -198,8 +198,11 @@ def _extract_yes_ask(market: dict) -> float | None:
 
     Handles both camelCase (from our live fetcher) and snake_case (from Kalshi API).
     Returns price in dollars (0-1 range) or None.
+
+    The public Kalshi API returns prices as cents integers (e.g., 47 for $0.47),
+    while the authenticated API returns dollar strings (e.g., "0.47").
     """
-    # Try dollar string fields first (Kalshi API format)
+    # Try dollar string fields first (authenticated Kalshi API format)
     ask_str = market.get("yes_ask_dollars") or market.get("yesAskDollars")
     if ask_str:
         try:
@@ -209,7 +212,7 @@ def _extract_yes_ask(market: dict) -> float | None:
         except (ValueError, TypeError):
             pass
 
-    # Try direct numeric fields
+    # Try direct numeric fields (could be dollars 0-1 or cents 1-99)
     for key in ("yes_ask", "yesAsk"):
         val = market.get(key)
         if val is not None:
@@ -217,6 +220,9 @@ def _extract_yes_ask(market: dict) -> float | None:
                 val = float(val)
                 if 0 < val < 1:
                     return val
+                # Handle cents format from public API (e.g., 47 → 0.47)
+                if 1 <= val <= 99:
+                    return val / 100
             except (ValueError, TypeError):
                 pass
 
