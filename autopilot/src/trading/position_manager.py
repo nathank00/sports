@@ -104,7 +104,7 @@ class PositionManager:
         2. Create FLAT row if none exists
         3. If state != FLAT → skip (log BLOCKED)
         4. Check cooldown_until
-        5. Check entry guards (first 3 min, last 3 min Q4/OT, blowout)
+        5. Check entry guards (last 3 min Q4/OT, blowout)
         6. Check edge >= user's threshold
         7. Check edge persistence (2+ consecutive cycles)
         8. All pass → set state = PENDING_ENTRY with intent fields
@@ -292,16 +292,9 @@ class PositionManager:
         """Return block reason string, or None if all guards pass.
 
         Guards (entry blockers only, never force exit):
-        - First 3 minutes of game (elapsed < 180s)
         - Last 3 minutes of Q4/OT (period >= 4 and seconds_remaining < 180)
         - Blowout (margin > 15 in Q4+)
         """
-        # First 3 minutes
-        quarter_length = 720.0
-        elapsed = (period - 1) * quarter_length + (quarter_length - seconds_remaining)
-        if elapsed < 180:
-            return f"First 3 minutes of game ({elapsed:.0f}s elapsed)"
-
         # Last 3 minutes of Q4 or OT
         if period >= 4 and seconds_remaining < 180:
             period_label = "OT" if period > 4 else "Q4"
