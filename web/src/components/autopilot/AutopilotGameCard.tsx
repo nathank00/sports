@@ -8,11 +8,6 @@ interface Props {
   position: AutopilotPosition | null;
   edgeThreshold: number;
   onManualExit: (position: AutopilotPosition) => void;
-  onUpdateTpSl: (
-    eventId: string,
-    takeProfitPrice: number,
-    stopLossPrice: number
-  ) => void;
 }
 
 function formatClock(period: number, secondsRemaining: number): string {
@@ -53,7 +48,7 @@ function formatStartTime(iso: string): string {
 
 // ── Position state badge ─────────────────────────────────────────────
 
-function PositionBadge({ state }: { state: string }) {
+function PositionBadge({ state, label }: { state: string; label?: string }) {
   const config: Record<string, { bg: string; text: string; label: string }> = {
     FLAT: { bg: "bg-neutral-800", text: "text-neutral-500", label: "FLAT" },
     PENDING_ENTRY: {
@@ -64,12 +59,12 @@ function PositionBadge({ state }: { state: string }) {
     LONG_HOME: {
       bg: "bg-green-900/40",
       text: "text-green-400",
-      label: "LONG HOME",
+      label: "LONG",
     },
     LONG_AWAY: {
       bg: "bg-green-900/40",
       text: "text-green-400",
-      label: "LONG AWAY",
+      label: "LONG",
     },
     EXITING: {
       bg: "bg-blue-900/40",
@@ -89,7 +84,7 @@ function PositionBadge({ state }: { state: string }) {
     <span
       className={`text-xs font-medium px-2 py-0.5 rounded border ${c.bg} ${c.text} border-current/20`}
     >
-      {c.label}
+      {label || c.label}
     </span>
   );
 }
@@ -101,22 +96,12 @@ function PositionSection({
   currentHomePrice,
   currentAwayPrice,
   onManualExit,
-  onUpdateTpSl,
 }: {
   position: AutopilotPosition;
   currentHomePrice?: number | null;
   currentAwayPrice?: number | null;
   onManualExit: (position: AutopilotPosition) => void;
-  onUpdateTpSl: (
-    eventId: string,
-    takeProfitPrice: number,
-    stopLossPrice: number
-  ) => void;
 }) {
-  const [editingTpSl, setEditingTpSl] = useState(false);
-  const [tpInput, setTpInput] = useState("");
-  const [slInput, setSlInput] = useState("");
-
   const isLong =
     position.state === "LONG_HOME" || position.state === "LONG_AWAY";
   const isLocked = position.state === "LOCKED";
@@ -136,18 +121,28 @@ function PositionSection({
       ? (currentPrice - position.entry_price) * position.quantity
       : null;
 
+  // Resolve the 3-letter team abbreviation for the side we bought
+  const teamAbbr =
+    position.side === "HOME"
+      ? position.home_team
+      : position.side === "AWAY"
+        ? position.away_team
+        : null;
+
   // Don't render anything for FLAT positions
   if (position.state === "FLAT") return null;
 
   return (
     <div className="text-xs mb-2 py-2 px-2 rounded bg-neutral-800/50 border border-neutral-800">
-      {/* Header row: badge + side + EXIT button */}
+      {/* Header row: team badge + EXIT button */}
       <div className="flex items-center justify-between mb-1">
         <div className="flex items-center gap-2">
-          <PositionBadge state={position.state} />
-          {position.side && (
-            <span className="text-neutral-400">{position.side} YES</span>
-          )}
+          <PositionBadge
+            state={position.state}
+            label={
+              (isLong || isExiting) && teamAbbr ? teamAbbr : undefined
+            }
+          />
         </div>
         {isLong && (
           <button
@@ -181,79 +176,6 @@ function PositionSection({
               </span>
             )}
           </div>
-        </div>
-      )}
-
-      {/* TP/SL levels */}
-      {isLong &&
-        position.take_profit_price != null &&
-        position.stop_loss_price != null && (
-          <div className="flex items-center justify-between py-0.5 mt-0.5">
-            <div className="flex gap-3">
-              <span className="text-green-600">
-                TP: {(position.take_profit_price * 100).toFixed(0)}c
-              </span>
-              <span className="text-red-600">
-                SL: {(position.stop_loss_price * 100).toFixed(0)}c
-              </span>
-            </div>
-            <button
-              onClick={() => {
-                setEditingTpSl(!editingTpSl);
-                if (!editingTpSl) {
-                  setTpInput(
-                    (position.take_profit_price! * 100).toFixed(0)
-                  );
-                  setSlInput(
-                    (position.stop_loss_price! * 100).toFixed(0)
-                  );
-                }
-              }}
-              className="text-neutral-600 hover:text-neutral-400"
-            >
-              {editingTpSl ? "cancel" : "edit"}
-            </button>
-          </div>
-        )}
-
-      {/* TP/SL editing inputs */}
-      {editingTpSl && isLong && (
-        <div className="flex items-center gap-2 mt-1">
-          <div className="flex items-center gap-1">
-            <label className="text-neutral-600">TP:</label>
-            <input
-              type="number"
-              value={tpInput}
-              onChange={(e) => setTpInput(e.target.value)}
-              className="w-14 bg-neutral-900 border border-neutral-700 rounded px-1 py-0.5 text-white text-xs"
-              step="1"
-            />
-            <span className="text-neutral-600">c</span>
-          </div>
-          <div className="flex items-center gap-1">
-            <label className="text-neutral-600">SL:</label>
-            <input
-              type="number"
-              value={slInput}
-              onChange={(e) => setSlInput(e.target.value)}
-              className="w-14 bg-neutral-900 border border-neutral-700 rounded px-1 py-0.5 text-white text-xs"
-              step="1"
-            />
-            <span className="text-neutral-600">c</span>
-          </div>
-          <button
-            onClick={() => {
-              const tp = Number(tpInput) / 100;
-              const sl = Number(slInput) / 100;
-              if (tp > 0 && sl > 0) {
-                onUpdateTpSl(position.event_id, tp, sl);
-                setEditingTpSl(false);
-              }
-            }}
-            className="text-green-500 hover:text-green-400 font-medium"
-          >
-            save
-          </button>
         </div>
       )}
 
@@ -301,16 +223,10 @@ function PregameCard({
   game,
   position,
   onManualExit,
-  onUpdateTpSl,
 }: {
   game: AutopilotGame;
   position: AutopilotPosition | null;
   onManualExit: (position: AutopilotPosition) => void;
-  onUpdateTpSl: (
-    eventId: string,
-    tp: number,
-    sl: number
-  ) => void;
 }) {
   const homePrice = game.kalshiHomePrice;
   const awayPrice = game.kalshiAwayPrice;
@@ -335,10 +251,13 @@ function PregameCard({
         <div className="mb-3">
           <div className="flex justify-between text-xs text-neutral-500 mb-1">
             <span>
-              {game.awayTeam} {probBar(awayPrice)}
+              {game.awayTeam} {(awayPrice * 100).toFixed(0)}c
+            </span>
+            <span className="text-[10px] text-neutral-700 uppercase tracking-wide">
+              Kalshi
             </span>
             <span>
-              {probBar(homePrice)} {game.homeTeam}
+              {(homePrice * 100).toFixed(0)}c {game.homeTeam}
             </span>
           </div>
           <div className="h-2 bg-neutral-800 rounded-full overflow-hidden flex">
@@ -350,14 +269,6 @@ function PregameCard({
               className="bg-blue-500/40 transition-all duration-500"
               style={{ width: `${homePrice * 100}%` }}
             />
-          </div>
-          <div className="flex gap-4 text-xs text-neutral-600 mt-1.5">
-            <span>
-              {game.awayTeam}: {(awayPrice * 100).toFixed(0)}c
-            </span>
-            <span>
-              {game.homeTeam}: {(homePrice * 100).toFixed(0)}c
-            </span>
           </div>
         </div>
       )}
@@ -376,7 +287,6 @@ function PregameCard({
           currentHomePrice={homePrice}
           currentAwayPrice={awayPrice}
           onManualExit={onManualExit}
-          onUpdateTpSl={onUpdateTpSl}
         />
       )}
 
@@ -394,17 +304,11 @@ function LiveCard({
   position,
   edgeThreshold,
   onManualExit,
-  onUpdateTpSl,
 }: {
   game: AutopilotGame;
   position: AutopilotPosition | null;
   edgeThreshold: number;
   onManualExit: (position: AutopilotPosition) => void;
-  onUpdateTpSl: (
-    eventId: string,
-    tp: number,
-    sl: number
-  ) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const s = game.latestSignal!;
@@ -497,13 +401,17 @@ function LiveCard({
           <div className="flex justify-between text-xs text-neutral-600 mb-0.5">
             <span>
               {s.away_team}{" "}
-              {kalshiAwayPrice != null ? probBar(kalshiAwayPrice) : "—"}
+              {kalshiAwayPrice != null
+                ? `${(kalshiAwayPrice * 100).toFixed(0)}c`
+                : "—"}
             </span>
             <span className="text-[10px] text-neutral-700 uppercase tracking-wide">
               Kalshi
             </span>
             <span>
-              {kalshiHomePrice != null ? probBar(kalshiHomePrice) : "—"}{" "}
+              {kalshiHomePrice != null
+                ? `${(kalshiHomePrice * 100).toFixed(0)}c`
+                : "—"}{" "}
               {s.home_team}
             </span>
           </div>
@@ -519,18 +427,6 @@ function LiveCard({
               />
             </div>
           )}
-          <div className="flex gap-4 text-xs text-neutral-600 mt-1">
-            {kalshiAwayPrice != null && (
-              <span>
-                {s.away_team}: {(kalshiAwayPrice * 100).toFixed(0)}c
-              </span>
-            )}
-            {kalshiHomePrice != null && (
-              <span>
-                {s.home_team}: {(kalshiHomePrice * 100).toFixed(0)}c
-              </span>
-            )}
-          </div>
         </div>
       )}
 
@@ -541,7 +437,6 @@ function LiveCard({
           currentHomePrice={kalshiHomePrice}
           currentAwayPrice={kalshiAwayPrice}
           onManualExit={onManualExit}
-          onUpdateTpSl={onUpdateTpSl}
         />
       )}
 
@@ -604,7 +499,6 @@ export default function AutopilotGameCard({
   position,
   edgeThreshold,
   onManualExit,
-  onUpdateTpSl,
 }: Props) {
   if (game.latestSignal) {
     return (
@@ -613,7 +507,6 @@ export default function AutopilotGameCard({
         position={position}
         edgeThreshold={edgeThreshold}
         onManualExit={onManualExit}
-        onUpdateTpSl={onUpdateTpSl}
       />
     );
   }
@@ -622,7 +515,6 @@ export default function AutopilotGameCard({
       game={game}
       position={position}
       onManualExit={onManualExit}
-      onUpdateTpSl={onUpdateTpSl}
     />
   );
 }

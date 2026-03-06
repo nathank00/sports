@@ -109,19 +109,12 @@ export default function AutopilotDashboard({ userId }: Props) {
   const [showLog, setShowLog] = useState(false);
 
   const positionManagerRef = useRef<AutopilotPositionManager | null>(null);
-  // Ref for synchronous position reads in the exit monitor callback
-  const positionsRef = useRef<Map<string, AutopilotPosition>>(new Map());
   // Ref to always call the latest handleNewSignal from the Supabase subscription
   const handleNewSignalRef = useRef<(signal: AutopilotSignal) => void>(
     () => {}
   );
   // Track latest signal timestamp for polling fallback
   const latestSignalTsRef = useRef<string | null>(null);
-
-  // Keep positionsRef in sync for the exit monitor callback
-  useEffect(() => {
-    positionsRef.current = positions;
-  }, [positions]);
 
   // ── Initialize position manager ─────────────────────────────────────
 
@@ -138,9 +131,6 @@ export default function AutopilotDashboard({ userId }: Props) {
 
     const pm = new AutopilotPositionManager(userId, logCallback);
     positionManagerRef.current = pm;
-
-    // Start exit monitor — polls Kalshi every 4s, checks TP/SL for LONG positions
-    pm.startExitMonitor(() => Array.from(positionsRef.current.values()));
 
     return () => {
       pm.dispose();
@@ -540,35 +530,6 @@ export default function AutopilotDashboard({ userId }: Props) {
     } catch (e) {
       console.error("Failed to save settings:", e);
     }
-
-    // If global TP or SL changed, recalculate all open positions' TP/SL from entry price
-    if (patch.take_profit !== undefined || patch.stop_loss !== undefined) {
-      const tp = patch.take_profit ?? settings.take_profit;
-      const sl = patch.stop_loss ?? settings.stop_loss;
-
-      for (const pos of positions.values()) {
-        if (
-          (pos.state === "LONG_HOME" || pos.state === "LONG_AWAY") &&
-          pos.entry_price != null
-        ) {
-          const newTp = pos.entry_price + tp;
-          const newSl = pos.entry_price - sl;
-          try {
-            await supabase
-              .from("autopilot_positions")
-              .update({
-                take_profit_price: newTp,
-                stop_loss_price: newSl,
-                updated_at: new Date().toISOString(),
-              })
-              .eq("user_id", userId)
-              .eq("event_id", pos.event_id);
-          } catch (e) {
-            console.error("Failed to update position TP/SL:", e);
-          }
-        }
-      }
-    }
   };
 
   // ── Manual exit handler ──────────────────────────────────────────────
@@ -578,31 +539,6 @@ export default function AutopilotDashboard({ userId }: Props) {
       await positionManagerRef.current?.manualExit(position);
     },
     []
-  );
-
-  // ── Per-game TP/SL update handler ────────────────────────────────────
-
-  const handleUpdatePositionTpSl = useCallback(
-    async (
-      eventId: string,
-      takeProfitPrice: number,
-      stopLossPrice: number
-    ) => {
-      try {
-        await supabase
-          .from("autopilot_positions")
-          .update({
-            take_profit_price: takeProfitPrice,
-            stop_loss_price: stopLossPrice,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("user_id", userId)
-          .eq("event_id", eventId);
-      } catch (e) {
-        console.error("Failed to update position TP/SL:", e);
-      }
-    },
-    [userId]
   );
 
   // ── Game list sorting ────────────────────────────────────────────────
@@ -783,7 +719,7 @@ export default function AutopilotDashboard({ userId }: Props) {
             <p className="text-xs text-neutral-500 mt-0.5">
               {effectiveSettings.auto_execute_enabled
                 ? keysConfigured
-                  ? `Placing bets when edge > ${effectiveSettings.edge_threshold}% | TP +${(effectiveSettings.take_profit * 100).toFixed(0)}c / SL -${(effectiveSettings.stop_loss * 100).toFixed(0)}c`
+                  ? `Placing bets when edge > ${effectiveSettings.edge_threshold}% | Manual exit only`
                   : "Kalshi keys not configured — go to Terminal > Settings"
                 : "Signals display only — no bets placed"}
             </p>
@@ -845,40 +781,6 @@ export default function AutopilotDashboard({ userId }: Props) {
                   className="w-full bg-neutral-800 border border-neutral-700 rounded px-2 py-1 text-white"
                   step="0.5"
                   min="0"
-                />
-              </div>
-              <div>
-                <label className="text-neutral-500 block mb-1">
-                  Take Profit (cents)
-                </label>
-                <input
-                  type="number"
-                  value={Math.round(effectiveSettings.take_profit * 100)}
-                  onChange={(e) =>
-                    updateSettings({
-                      take_profit: Number(e.target.value) / 100,
-                    })
-                  }
-                  className="w-full bg-neutral-800 border border-neutral-700 rounded px-2 py-1 text-white"
-                  step="1"
-                  min="1"
-                />
-              </div>
-              <div>
-                <label className="text-neutral-500 block mb-1">
-                  Stop Loss (cents)
-                </label>
-                <input
-                  type="number"
-                  value={Math.round(effectiveSettings.stop_loss * 100)}
-                  onChange={(e) =>
-                    updateSettings({
-                      stop_loss: Number(e.target.value) / 100,
-                    })
-                  }
-                  className="w-full bg-neutral-800 border border-neutral-700 rounded px-2 py-1 text-white"
-                  step="1"
-                  min="1"
                 />
               </div>
               <div>
@@ -989,7 +891,6 @@ export default function AutopilotDashboard({ userId }: Props) {
                 position={getPositionForGame(game)}
                 edgeThreshold={effectiveSettings.edge_threshold}
                 onManualExit={handleManualExit}
-                onUpdateTpSl={handleUpdatePositionTpSl}
               />
             ))}
           </div>

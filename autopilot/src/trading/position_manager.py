@@ -134,8 +134,41 @@ class PositionManager:
             })
             position = {"state": "FLAT", "cooldown_until": None}
 
-        # 3. If state != FLAT → skip
+        # 3. If state != FLAT → skip (but unlock LOCKED positions with expired cooldowns)
         state = position.get("state", "FLAT")
+        if state == "LOCKED":
+            cooldown_until_val = position.get("cooldown_until")
+            cooldown_expired = True
+            if cooldown_until_val:
+                try:
+                    cooldown_dt = datetime.fromisoformat(cooldown_until_val)
+                    cooldown_expired = datetime.now(timezone.utc) >= cooldown_dt
+                except (ValueError, TypeError):
+                    pass
+            if cooldown_expired:
+                upsert_position(user_id, event_id, {
+                    "game_id": game_id,
+                    "state": "FLAT",
+                    "side": None,
+                    "ticker": None,
+                    "home_team": home_team,
+                    "away_team": away_team,
+                    "entry_price": None,
+                    "quantity": None,
+                    "entry_timestamp": None,
+                    "exit_price": None,
+                    "exit_timestamp": None,
+                    "realized_pnl": None,
+                    "cooldown_until": None,
+                    "intent_price": None,
+                    "intent_contracts": None,
+                    "intent_side": None,
+                    "intent_created_at": None,
+                })
+                state = "FLAT"
+                position = {"state": "FLAT", "cooldown_until": None}
+                logger.info(f"  Reset LOCKED position to FLAT for user {user_id[:8]}... on {event_id}")
+
         if state != "FLAT":
             write_log(
                 user_id=user_id,
@@ -201,10 +234,6 @@ class PositionManager:
         side = "HOME" if signal.recommended_action == "BUY_HOME" else "AWAY"
         now = datetime.now(timezone.utc).isoformat()
 
-        # Compute TP/SL prices
-        tp_price = intent_price + user_settings.take_profit
-        sl_price = intent_price - user_settings.stop_loss
-
         upsert_position(user_id, event_id, {
             "game_id": game_id,
             "state": "PENDING_ENTRY",
@@ -216,8 +245,6 @@ class PositionManager:
             "intent_contracts": contracts,
             "intent_side": "yes",
             "intent_created_at": now,
-            "take_profit_price": round(tp_price, 4),
-            "stop_loss_price": round(sl_price, 4),
         })
 
         write_log(
@@ -226,8 +253,7 @@ class PositionManager:
             message=(
                 f"ENTRY INTENT: {signal.recommended_action} "
                 f"{signal.recommended_ticker} x{contracts} @ "
-                f"{intent_price * 100:.0f}c (edge={edge:.1f}%, "
-                f"TP={tp_price * 100:.0f}c, SL={sl_price * 100:.0f}c)"
+                f"{intent_price * 100:.0f}c (edge={edge:.1f}%)"
             ),
             event_id=event_id,
             metadata={
@@ -236,8 +262,6 @@ class PositionManager:
                 "contracts": contracts,
                 "price": intent_price,
                 "edge": edge,
-                "tp": tp_price,
-                "sl": sl_price,
             },
         )
 
