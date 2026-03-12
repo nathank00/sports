@@ -4,7 +4,7 @@ import MlbDashboard from "@/components/MlbDashboard";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "[ ONE OF ONE ] — MLB",
+  title: "[ EDGEMASTER ] — MLB",
 };
 
 export default function MlbPage() {

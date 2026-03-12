@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test runner for the ONE OF ONE pipeline test suite.
+Test runner for the Edgemaster pipeline test suite.
 
 Usage:
     python tests/run_tests.py                  # run all offline tests
@@ -35,7 +35,7 @@ def main():
     args.extend(user_args)
 
     print(f"\n{'=' * 70}")
-    print(f"  ONE OF ONE — Test Suite")
+    print(f"  EDGEMASTER — Test Suite")
     print(f"{'=' * 70}\n")
 
     result = subprocess.run(args, cwd=str(REPO_ROOT))

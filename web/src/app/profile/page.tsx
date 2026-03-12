@@ -7,7 +7,7 @@ import ProfileDashboard from "@/components/ProfileDashboard";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "[ ONE OF ONE ] — Profile",
+  title: "[ EDGEMASTER ] — Profile",
 };
 
 export default async function ProfilePage() {

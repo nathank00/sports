@@ -1,4 +1,4 @@
-# [ ONE OF ONE ] — Brand Ethos
+# [ EDGEMASTER ] — Brand Ethos
 
 ---
 
@@ -10,7 +10,7 @@
 
 ## Who We Are
 
-ONE OF ONE is an algorithmic sports intelligence platform. We build quantitative models that extract signal from noise — turning raw data into actionable edge before the market corrects.
+Edgemaster is a quantitative prediction market trading platform. We build probability models that extract signal from noise — turning raw data into actionable edge before the market corrects.
 
 We are not a sportsbook. We are not a tipster. We are infrastructure for the informed.
 
@@ -103,7 +103,7 @@ The design should feel like opening a Bloomberg terminal for the first time — 
 
 ## The Name
 
-**[ ONE OF ONE ]** — a phrase borrowed from sneaker and art culture meaning singular, irreplaceable, the only one of its kind. In our context: the models, the edge, the system — there is no second source.
+**[ EDGEMASTER ]** — the name says what it does. Find edge, master it, execute on it with discipline.
 
 The brackets are intentional. They frame the name like a variable, a reference, a system identifier. Code, not copy.
 
@@ -111,7 +111,7 @@ The brackets are intentional. They frame the name like a variable, a reference, 
 
 ## Competitive Positioning
 
-| | Mainstream Sportsbooks | Tipster Services | ONE OF ONE |
+| | Mainstream Sportsbooks | Tipster Services | Edgemaster |
 |---|---|---|---|
 | **Core offer** | Entertainment + wagering | Human opinions | Algorithmic intelligence + execution tools |
 | **Revenue model** | House edge | Subscription to picks | Subscription to infrastructure |
@@ -124,9 +124,9 @@ The brackets are intentional. They frame the name like a variable, a reference, 
 ## Messaging Framework
 
 **Hero (homepage):**
-> Algorithmic sports intelligence.
+> Quantitative prediction market trading.
 >
-> *Quantitative models. Calculated edge. Professional execution.*
+> *Live probability models. Computed edge. Disciplined execution on Kalshi.*
 
 **Predictions:**
 > The signal is live.

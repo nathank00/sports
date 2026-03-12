@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    oneofone_desktop_lib::run()
+    edgemaster_desktop_lib::run()
 }

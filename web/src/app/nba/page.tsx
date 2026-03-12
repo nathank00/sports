@@ -6,7 +6,7 @@ import NbaDashboard from "@/components/NbaDashboard";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "[ ONE OF ONE ] — NBA",
+  title: "[ EDGEMASTER ] — NBA",
 };
 
 export default function NbaPage() {

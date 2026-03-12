@@ -97,7 +97,7 @@ function LoginForm() {
         href="/"
         className="mb-8 font-mono text-2xl tracking-widest text-neutral-100 hover:text-white transition-colors"
       >
-        [ ONE OF ONE ]
+        [ EDGEMASTER ]
       </Link>
 
       <div className="w-full max-w-sm rounded-lg border border-neutral-800 bg-neutral-900/60 p-6">

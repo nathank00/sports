@@ -2,7 +2,7 @@ import Link from "next/link";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "[ ONE OF ONE ] — Terms & Conditions",
+  title: "[ EDGEMASTER ] — Terms & Conditions",
 };
 
 export default function TermsPage() {
@@ -28,7 +28,7 @@ export default function TermsPage() {
             1. Acceptance of Terms
           </h2>
           <p>
-            By accessing or using the ONE OF ONE platform (the
+            By accessing or using the Edgemaster platform (the
             &quot;Service&quot;), you agree to be bound by these Terms &amp;
             Conditions. If you do not agree, do not use the Service. We reserve
             the right to modify these terms at any time, and your continued use
@@ -41,9 +41,9 @@ export default function TermsPage() {
             2. Description of Service
           </h2>
           <p>
-            ONE OF ONE provides algorithmic sports prediction data, analytics
+            Edgemaster provides quantitative prediction market data, analytics
             tools, and execution interfaces. The Service includes free
-            prediction signals, a paid manual execution terminal, and future
+            prediction signals, a paid manual execution terminal, and
             automated trading features. The Service is intended for
             informational and analytical purposes.
           </p>
@@ -151,8 +151,8 @@ export default function TermsPage() {
           </h2>
           <p>
             All content, models, algorithms, data, code, designs, and branding
-            associated with the Service are the intellectual property of ONE OF
-            ONE. You may not reproduce, distribute, reverse-engineer, or create
+            associated with the Service are the intellectual property of
+            Edgemaster. You may not reproduce, distribute, reverse-engineer, or create
             derivative works from any part of the Service without prior written
             consent.
           </p>
@@ -192,7 +192,7 @@ export default function TermsPage() {
             11. Limitation of Liability
           </h2>
           <p>
-            To the maximum extent permitted by law, ONE OF ONE and its
+            To the maximum extent permitted by law, Edgemaster and its
             operators, affiliates, and employees shall not be liable for any
             indirect, incidental, special, consequential, or punitive damages,
             including but not limited to loss of profits, data, or capital,
@@ -261,7 +261,7 @@ export default function TermsPage() {
           </h2>
           <p>
             Questions about these Terms should be directed to{" "}
-            <span className="text-neutral-300">support@oneofone.com</span>.
+            <span className="text-neutral-300">support@edgemaster.com</span>.
           </p>
         </section>
       </div>

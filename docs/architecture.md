@@ -1,7 +1,7 @@
 # File Structure
 
 ```
-oneofone/
+edgemaster/
 ├── .github/
 │   └── workflows/
 │       ├── nba-pipeline.yml              # NBA scheduled automation (3x daily)

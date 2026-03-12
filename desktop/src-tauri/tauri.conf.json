@@ -1,7 +1,7 @@
 {
-  "productName": "ONE OF ONE",
+  "productName": "Edgemaster",
   "version": "0.2.0",
-  "identifier": "com.oneofone.desktop",
+  "identifier": "com.edgemaster.desktop",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
     "withGlobalTauri": false,
     "windows": [
       {
-        "title": "[ ONE OF ONE ]",
+        "title": "[ EDGEMASTER ]",
         "width": 900,
         "height": 700,
         "resizable": true,

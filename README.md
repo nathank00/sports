@@ -1,6 +1,6 @@
 <div align="center">
 
-# [ ONE OF ONE ]
+# [ EDGEMASTER ]
 
 **Quantitative prediction market trading platform** — probability modeling, real-time edge computation, and disciplined execution on [Kalshi](https://kalshi.com)
 
@@ -12,7 +12,7 @@
 
 ---
 
-ONE OF ONE is a vertically integrated prediction and execution platform for sports prediction markets. It pairs pregame ensemble classifiers with a live in-game probabilistic model to surface mispriced contracts on Kalshi — then executes on them with disciplined risk controls.
+Edgemaster is a vertically integrated prediction and execution platform for sports prediction markets. It pairs pregame ensemble classifiers with a live in-game probabilistic model to surface mispriced contracts on Kalshi — then executes on them with disciplined risk controls.
 
 The system ingests play-by-play telemetry, engineers temporal and contextual features, fits calibrated probability models on historical outcomes, and evaluates the resulting predictions against live market prices. Execution is governed by friction-aware edge computation, liquidity filters, anti-hedging enforcement, and configurable take-profit / stop-loss auto-exits.
 
@@ -181,7 +181,7 @@ All pipelines are orchestrated via GitHub Actions with configurable schedules an
 ## Project Structure
 
 ```
-oneofone/
+edgemaster/
 ├── .github/workflows/
 │   ├── nba-pipeline.yml             # Pregame NBA (3x daily)
 │   ├── mlb-pipeline.yml             # Pregame MLB (daily + live)

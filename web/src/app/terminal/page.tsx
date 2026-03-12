@@ -8,7 +8,7 @@ import Paywall from "@/components/terminal/Paywall";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "[ ONE OF ONE ] — Terminal",
+  title: "[ EDGEMASTER ] — Terminal",
 };
 
 export default async function TerminalPage() {

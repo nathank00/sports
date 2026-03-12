@@ -14,8 +14,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "[ ONE OF ONE ]",
-  description: "AI-powered sports predictions",
+  title: "[ EDGEMASTER ]",
+  description: "Quantitative prediction market trading",
 };
 
 export default function RootLayout({

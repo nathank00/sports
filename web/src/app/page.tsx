@@ -16,7 +16,7 @@ export default function Home() {
 
         <div className="relative z-10 max-w-3xl">
           <p className="mb-8 font-mono text-[11px] uppercase tracking-[0.35em] text-neutral-600">
-            [ one of one ]
+            [ edgemaster ]
           </p>
           <h1 className="mb-6 text-5xl font-semibold leading-[1.05] tracking-tight text-white sm:text-6xl md:text-[80px]">
             Quantitative
@@ -208,7 +208,7 @@ export default function Home() {
       <footer className="border-t border-neutral-800/50">
         <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-8">
           <span className="font-mono text-[11px] tracking-[0.25em] text-neutral-700">
-            [ ONE OF ONE ]
+            [ EDGEMASTER ]
           </span>
           <div className="flex items-center gap-4">
             <Link

@@ -4,7 +4,7 @@ import SignalsDashboard from "@/components/SignalsDashboard";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "[ ONE OF ONE ] — Signals",
+  title: "[ EDGEMASTER ] — Signals",
 };
 
 export default function SignalsPage() {

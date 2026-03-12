@@ -2,7 +2,7 @@ import Link from "next/link";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "[ ONE OF ONE ] — Privacy Policy",
+  title: "[ EDGEMASTER ] — Privacy Policy",
 };
 
 export default function PrivacyPage() {
@@ -28,8 +28,8 @@ export default function PrivacyPage() {
             1. Introduction
           </h2>
           <p>
-            ONE OF ONE (&quot;we,&quot; &quot;our,&quot; or &quot;us&quot;)
-            operates the website located at oneofone-silk.vercel.app (the
+            Edgemaster (&quot;we,&quot; &quot;our,&quot; or &quot;us&quot;)
+            operates the website located at edgemaster.com (the
             &quot;Service&quot;). This Privacy Policy explains how we collect,
             use, and protect your information when you use our Service.
           </p>
@@ -199,7 +199,7 @@ export default function PrivacyPage() {
           <p>
             If you have questions about this Privacy Policy, please contact us
             at{" "}
-            <span className="text-neutral-300">support@oneofone.com</span>.
+            <span className="text-neutral-300">support@edgemaster.com</span>.
           </p>
         </section>
       </div>

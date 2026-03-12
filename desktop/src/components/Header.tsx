@@ -18,7 +18,7 @@ export default function Header({ activeTab, onTabChange, useDemoApi }: HeaderPro
     <header className="border-b border-neutral-800 bg-neutral-950/80 backdrop-blur-sm sticky top-0 z-50">
       <div className="flex items-center justify-between px-6 py-3">
         <span className="font-mono text-sm tracking-widest text-neutral-100">
-          [ ONE OF ONE ]
+          [ EDGEMASTER ]
         </span>
         <div className="flex items-center gap-1">
           {tabs.map((tab) => (

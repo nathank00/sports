@@ -39,7 +39,7 @@ export default function Nav() {
           href="/"
           className="font-mono text-lg tracking-widest text-neutral-100 hover:text-white transition-colors"
         >
-          [ ONE OF ONE ]
+          [ EDGEMASTER ]
         </Link>
         <div className="flex items-center gap-6">
           {links.map((link) => (

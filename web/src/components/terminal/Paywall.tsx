@@ -15,12 +15,12 @@ const PRODUCT_INFO: Record<
   terminal: {
     title: "Terminal Access",
     description:
-      "Subscribe to access the ONE OF ONE trading terminal. Connect your Kalshi account, view model predictions matched to live markets, and place bets with calculated edge.",
+      "Subscribe to access the Edgemaster trading terminal. Connect your Kalshi account, view model outputs matched to live markets, and place trades with calculated edge.",
   },
   autopilot: {
     title: "Autopilot Access",
     description:
-      "Subscribe to access ONE OF ONE Autopilot. Live in-game win probabilities and autonomous trade execution on Kalshi.",
+      "Subscribe to access Edgemaster Autopilot. Live in-game win probabilities and disciplined trade execution on Kalshi.",
   },
 };
 

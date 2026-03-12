@@ -8,7 +8,7 @@ import Paywall from "@/components/terminal/Paywall";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "[ ONE OF ONE ] — Autopilot",
+  title: "[ EDGEMASTER ] — Autopilot",
 };
 
 export default async function AutopilotPage() {
