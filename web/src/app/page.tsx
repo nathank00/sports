@@ -19,21 +19,22 @@ export default function Home() {
             [ one of one ]
           </p>
           <h1 className="mb-6 text-5xl font-semibold leading-[1.05] tracking-tight text-white sm:text-6xl md:text-[80px]">
-            Algorithmic
-            <br /> sports betting.
+            Quantitative
+            <br /> prediction market
+            <br /> trading.
           </h1>
           <p className="mx-auto mb-14 flex items-center justify-center gap-3 text-sm tracking-wide text-neutral-400 md:gap-4 md:text-base">
-            <span>Quantitative Models</span>
+            <span>Live Probability Models</span>
             <span className="text-neutral-700">|</span>
             <span>Computed Edge</span>
             <span className="text-neutral-700">|</span>
-            <span>Direct Execution</span>
+            <span>Disciplined Execution on Kalshi</span>
           </p>
           <Link
             href="/signals"
             className="group inline-flex items-center gap-2.5 rounded-full bg-white px-8 py-3.5 text-sm font-medium tracking-wide text-neutral-950 transition-all hover:scale-[1.02] hover:bg-neutral-200"
           >
-            View today&apos;s predictions
+            View today&apos;s models
             <span className="text-neutral-400 transition-transform group-hover:translate-x-0.5">
               →
             </span>
@@ -77,15 +78,15 @@ export default function Home() {
               The Signal
             </h3>
             <p className="mb-8 text-sm leading-relaxed text-neutral-500">
-              Daily pregame predictions powered by machine learning. Model
-              probability, market price, and calculated edge — for every game,
-              every day.
+              Daily probability estimates, market-implied price, and computed
+              edge for every game. Model outputs compared to live Kalshi
+              prices.
             </p>
             <Link
               href="/signals"
               className="group/link inline-flex items-center gap-1.5 text-sm text-neutral-400 transition-colors hover:text-white"
             >
-              View predictions
+              View models
               <span className="transition-transform group-hover/link:translate-x-0.5">
                 →
               </span>
@@ -104,9 +105,9 @@ export default function Home() {
             </div>
             <h3 className="mb-3 text-lg font-semibold text-white">Terminal</h3>
             <p className="mb-8 text-sm leading-relaxed text-neutral-500">
-              Execute against live markets. Connect your exchange keys, match
-              predictions to open positions, and place orders with calculated
-              sizing.
+              Manual execution with configurable sizing and risk controls.
+              Connect your Kalshi keys, match model outputs to live markets,
+              and place orders with calculated position sizing.
             </p>
             <Link
               href="/terminal"
@@ -133,9 +134,9 @@ export default function Home() {
               Autopilot
             </h3>
             <p className="mb-8 text-sm leading-relaxed text-neutral-500">
-              Live in-game win probability on 19 features. Real-time Kalshi
-              market matching with autonomous edge detection and trade
-              execution.
+              Rule-based live market surveillance and automated execution when
+              multiple conditions align. Probability smoothing, liquidity
+              filters, take-profit, stop-loss, and disciplined entry criteria.
             </p>
             <Link
               href="/autopilot"
@@ -162,12 +163,15 @@ export default function Home() {
             Methodology
           </p>
           <p className="text-lg leading-relaxed text-neutral-300 md:text-xl">
-            Every prediction is the output of a system — not a person&apos;s
-            intuition. Gradient-boosted models trained on six seasons of
-            play-by-play data, validated out-of-sample, and recalibrated weekly.
+            Every output is the product of a system — not a person&apos;s
+            intuition. Models trained on six seasons of play-by-play data,
+            validated out-of-sample, and layered with execution controls:
+            liquidity filters, spread-width gates, time-remaining rules, and
+            configurable risk caps.
           </p>
           <p className="mt-6 text-sm text-neutral-600">
-            No gut feelings. No expert picks. Just math.
+            No gut feelings. No expert picks. Systematic models with
+            disciplined risk management.
           </p>
         </div>
       </section>
@@ -184,13 +188,13 @@ export default function Home() {
             The signal is live.
           </h2>
           <p className="mb-10 text-sm text-neutral-500">
-            Predictions update daily. The edge won&apos;t wait.
+            Models update daily. The edge won&apos;t wait.
           </p>
           <Link
             href="/signals"
             className="group inline-flex items-center gap-2.5 rounded-full bg-white px-8 py-3.5 text-sm font-medium tracking-wide text-neutral-950 transition-all hover:scale-[1.02] hover:bg-neutral-200"
           >
-            Get started
+            Explore the models
             <span className="text-neutral-400 transition-transform group-hover:translate-x-0.5">
               →
             </span>

@@ -66,6 +66,11 @@ function PositionBadge({ state, label }: { state: string; label?: string }) {
       text: "text-green-400",
       label: "LONG",
     },
+    PENDING_EXIT: {
+      bg: "bg-orange-900/40",
+      text: "text-orange-400",
+      label: "EXITING...",
+    },
     EXITING: {
       bg: "bg-blue-900/40",
       text: "text-blue-400",
@@ -106,6 +111,7 @@ function PositionSection({
     position.state === "LONG_HOME" || position.state === "LONG_AWAY";
   const isLocked = position.state === "LOCKED";
   const isPending = position.state === "PENDING_ENTRY";
+  const isPendingExit = position.state === "PENDING_EXIT";
   const isExiting = position.state === "EXITING";
 
   // Current market price for this side
@@ -154,8 +160,15 @@ function PositionSection({
         )}
       </div>
 
-      {/* Entry details (for LONG, EXITING, and LOCKED states) */}
-      {(isLong || isLocked || isExiting) && position.entry_price != null && (
+      {/* Pending auto-exit info */}
+      {isPendingExit && (
+        <div className="text-orange-400/70 py-0.5 animate-pulse">
+          Auto-exit triggered — placing sell order...
+        </div>
+      )}
+
+      {/* Entry details (for LONG, EXITING, PENDING_EXIT, and LOCKED states) */}
+      {(isLong || isLocked || isExiting || isPendingExit) && position.entry_price != null && (
         <div className="flex items-center justify-between py-0.5">
           <span className="text-neutral-500">
             {position.quantity}x @ {(position.entry_price * 100).toFixed(0)}c
@@ -313,8 +326,10 @@ function LiveCard({
   const [expanded, setExpanded] = useState(false);
   const s = game.latestSignal!;
 
-  const homeProb = s.model_home_win_prob;
+  // Use blended probability if available, fallback to raw model
+  const homeProb = s.blended_home_win_prob ?? s.model_home_win_prob;
   const awayProb = 1 - homeProb;
+  const isBlended = s.blended_home_win_prob != null;
 
   // Use freshest Kalshi prices: game-level (from API poll every 30s) → signal-level (from backend)
   const kalshiHomePrice = game.kalshiHomePrice ?? s.kalshi_home_price;
@@ -352,6 +367,9 @@ function LiveCard({
         <div className="flex justify-between text-xs text-neutral-500 mb-1">
           <span>
             {s.away_team} {probBar(awayProb)}
+          </span>
+          <span className="text-[10px] text-neutral-700 uppercase tracking-wide">
+            {isBlended ? "Model (blended)" : "Model"}
           </span>
           <span>
             {probBar(homeProb)} {s.home_team}

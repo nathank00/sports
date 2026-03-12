@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass, field
 
 from autopilot.src.features.snapshot import GameState
+from autopilot.src.model.blender import ProbabilityBlender
 
 
 def estimate_possessions(fga: int, fta: int, oreb: int, tov: int) -> int:
@@ -66,6 +67,13 @@ class TrackedGame:
     # Kalshi market info (refreshed periodically, not every tick)
     kalshi_markets: list = field(default_factory=list)
     kalshi_markets_updated: float = 0.0
+
+    # Probability blender (smoothing + pregame blend)
+    blender: ProbabilityBlender = field(default_factory=ProbabilityBlender)
+
+    # Last probabilities (for logging/diagnostics)
+    last_blended_prob: float | None = None
+    last_raw_model_prob: float | None = None
 
     def has_state_changed(
         self,

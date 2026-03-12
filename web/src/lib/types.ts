@@ -150,6 +150,7 @@ export interface AutopilotSignal {
   home_score: number;
   away_score: number;
   model_home_win_prob: number;
+  blended_home_win_prob: number | null;
   kalshi_ticker_home: string | null;
   kalshi_ticker_away: string | null;
   kalshi_home_price: number | null;
@@ -160,6 +161,7 @@ export interface AutopilotSignal {
   recommended_side: string | null;
   recommended_ticker: string | null;
   reason: string | null;
+  reason_code: string | null;
 }
 
 /** A game on today's slate — pregame, live (with model signals), or completed. */
@@ -207,6 +209,7 @@ export interface AutopilotSettings {
 export type PositionState =
   | "FLAT"
   | "PENDING_ENTRY"
+  | "PENDING_EXIT"
   | "LONG_HOME"
   | "LONG_AWAY"
   | "EXITING"

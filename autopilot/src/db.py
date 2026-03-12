@@ -190,7 +190,7 @@ def upsert_position(user_id: str, event_id: str, data: dict) -> None:
 
 
 def fetch_stale_pending_intents(max_age_seconds: int = 35) -> list[dict]:
-    """Find PENDING_ENTRY positions older than max_age_seconds."""
+    """Find PENDING_ENTRY and PENDING_EXIT positions older than max_age_seconds."""
     from datetime import datetime, timezone, timedelta
 
     cutoff = (datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)).isoformat()
@@ -198,7 +198,7 @@ def fetch_stale_pending_intents(max_age_seconds: int = 35) -> list[dict]:
         result = (
             supabase.table("autopilot_positions")
             .select("*")
-            .eq("state", "PENDING_ENTRY")
+            .in_("state", ["PENDING_ENTRY", "PENDING_EXIT"])
             .lt("intent_created_at", cutoff)
             .execute()
         )
@@ -206,6 +206,43 @@ def fetch_stale_pending_intents(max_age_seconds: int = 35) -> list[dict]:
     except Exception as e:
         logger.error(f"Failed to fetch stale intents: {e}")
         return []
+
+
+def fetch_long_positions_for_event(event_id: str) -> list[dict]:
+    """Fetch all LONG_HOME and LONG_AWAY positions for a given event.
+
+    Used by monitor_exits() to check TP/SL/late-game conditions
+    across all active users holding positions on this event.
+    """
+    try:
+        result = (
+            supabase.table("autopilot_positions")
+            .select("*")
+            .eq("event_id", event_id)
+            .in_("state", ["LONG_HOME", "LONG_AWAY"])
+            .execute()
+        )
+        return result.data or []
+    except Exception as e:
+        logger.error(f"Failed to fetch long positions for {event_id}: {e}")
+        return []
+
+
+def fetch_user_settings(user_id: str) -> dict | None:
+    """Fetch a single user's autopilot settings."""
+    try:
+        result = (
+            supabase.table("autopilot_settings")
+            .select("*")
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        rows = result.data or []
+        return rows[0] if rows else None
+    except Exception as e:
+        logger.error(f"Failed to fetch settings for {user_id}: {e}")
+        return None
 
 
 def write_log(

@@ -719,9 +719,9 @@ export default function AutopilotDashboard({ userId }: Props) {
             <p className="text-xs text-neutral-500 mt-0.5">
               {effectiveSettings.auto_execute_enabled
                 ? keysConfigured
-                  ? `Placing bets when edge > ${effectiveSettings.edge_threshold}% | Manual exit only`
+                  ? `Trading when edge > ${effectiveSettings.edge_threshold}% | TP: ${Math.round(effectiveSettings.take_profit * 100)}c | SL: ${Math.round(effectiveSettings.stop_loss * 100)}c`
                   : "Kalshi keys not configured — go to Terminal > Settings"
-                : "Signals display only — no bets placed"}
+                : "Signals display only — no trades placed"}
             </p>
           </div>
         </div>
@@ -861,6 +861,40 @@ export default function AutopilotDashboard({ userId }: Props) {
                   <option value="dollars">Dollars</option>
                   <option value="contracts">Contracts</option>
                 </select>
+              </div>
+              <div>
+                <label className="text-neutral-500 block mb-1">
+                  Take Profit (c/contract)
+                </label>
+                <input
+                  type="number"
+                  value={Math.round(effectiveSettings.take_profit * 100)}
+                  onChange={(e) =>
+                    updateSettings({
+                      take_profit: Number(e.target.value) / 100,
+                    })
+                  }
+                  className="w-full bg-neutral-800 border border-neutral-700 rounded px-2 py-1 text-white"
+                  step="1"
+                  min="1"
+                />
+              </div>
+              <div>
+                <label className="text-neutral-500 block mb-1">
+                  Stop Loss (c/contract)
+                </label>
+                <input
+                  type="number"
+                  value={Math.round(effectiveSettings.stop_loss * 100)}
+                  onChange={(e) =>
+                    updateSettings({
+                      stop_loss: Number(e.target.value) / 100,
+                    })
+                  }
+                  className="w-full bg-neutral-800 border border-neutral-700 rounded px-2 py-1 text-white"
+                  step="1"
+                  min="1"
+                />
               </div>
             </div>
           </div>

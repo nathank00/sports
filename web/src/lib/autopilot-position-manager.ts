@@ -3,12 +3,13 @@
  *
  * Subscribes to position state changes from Supabase:
  * - PENDING_ENTRY → execute buy order with browser-stored Kalshi keys
- * - LONG_HOME/LONG_AWAY → held position (manual exit only)
+ * - PENDING_EXIT → execute sell order (auto-exit from TP/SL/late-game)
+ * - LONG_HOME/LONG_AWAY → held position (manual exit available)
  * - EXITING → sell order in progress
  * - LOCKED → done, no action
  *
- * All Kalshi keys stay in the browser. The backend decides when to enter;
- * this module handles the actual execution.
+ * All Kalshi keys stay in the browser. The backend decides when to enter
+ * and exit; this module handles the actual execution.
  */
 
 import { supabase } from "@/lib/supabase";
@@ -51,6 +52,17 @@ export class AutopilotPositionManager {
       this.processingIntents.add(position.event_id);
       try {
         await this.executeEntry(position);
+      } finally {
+        this.processingIntents.delete(position.event_id);
+      }
+    }
+
+    // Handle auto-exit intents from backend (TP/SL/late-game)
+    if (position.state === "PENDING_EXIT") {
+      if (this.processingIntents.has(position.event_id)) return;
+      this.processingIntents.add(position.event_id);
+      try {
+        await this.executeAutoExit(position);
       } finally {
         this.processingIntents.delete(position.event_id);
       }
@@ -163,6 +175,139 @@ export class AutopilotPositionManager {
   }
 
   /**
+   * Execute an auto-exit from a PENDING_EXIT intent (TP/SL/late-game).
+   *
+   * Similar to executeEntry but for sell orders. If the sell fails or
+   * gets no fills, restores to LONG_* so the backend can retry next tick.
+   */
+  private async executeAutoExit(position: AutopilotPosition): Promise<void> {
+    const {
+      event_id,
+      ticker,
+      quantity,
+      entry_price,
+      intent_price,
+      intent_created_at,
+      home_team,
+      away_team,
+      side,
+    } = position;
+
+    const gameLabel = `${away_team}@${home_team}`;
+
+    // Validate intent hasn't expired
+    if (intent_created_at) {
+      const intentAge = Date.now() - new Date(intent_created_at).getTime();
+      if (intentAge > 35_000) {
+        this.onLog("INFO", `${gameLabel}: Exit intent expired (${Math.round(intentAge / 1000)}s old)`, event_id);
+        // Restore to LONG so backend can retry
+        await this.updatePosition(event_id, {
+          state: side === "HOME" ? "LONG_HOME" : "LONG_AWAY",
+          intent_price: null,
+          intent_contracts: null,
+          intent_side: null,
+          intent_created_at: null,
+        });
+        return;
+      }
+    }
+
+    if (!ticker || !quantity || quantity <= 0) return;
+
+    // Fetch fresh bid price for exit
+    let exitPrice = intent_price || 0;
+    try {
+      const markets = await fetchNbaMarkets();
+      const market = markets.find((m) => m.ticker === ticker);
+      if (market?.yesBid != null) {
+        exitPrice = market.yesBid;
+        this.onLog(
+          "INFO",
+          `${gameLabel}: Fresh bid ${(exitPrice * 100).toFixed(0)}c for auto-exit`,
+          event_id
+        );
+      }
+    } catch {
+      this.onLog("INFO", `${gameLabel}: Using intent exit price`, event_id);
+    }
+
+    // Set state to EXITING (prevents double-exit)
+    await this.updatePosition(event_id, { state: "EXITING" });
+
+    try {
+      const result = await sellOrder(
+        ticker,
+        "yes",
+        quantity,
+        exitPrice.toFixed(2)
+      );
+
+      const fillCount = result.fillCount ?? 0;
+
+      if (fillCount > 0) {
+        const realizedPnl = entry_price
+          ? (exitPrice - entry_price) * fillCount
+          : null;
+
+        const cooldownUntil = new Date(
+          Date.now() + ENTRY_FAILURE_COOLDOWN * 1000
+        ).toISOString();
+
+        await this.updatePosition(event_id, {
+          state: "LOCKED",
+          exit_price: exitPrice,
+          exit_timestamp: new Date().toISOString(),
+          realized_pnl: realizedPnl ? Math.round(realizedPnl * 100) / 100 : null,
+          cooldown_until: cooldownUntil,
+          intent_price: null,
+          intent_contracts: null,
+          intent_side: null,
+          intent_created_at: null,
+        });
+
+        const pnlStr = realizedPnl != null
+          ? `${realizedPnl >= 0 ? "+" : ""}$${realizedPnl.toFixed(2)}`
+          : "unknown";
+
+        this.onLog(
+          "EXIT",
+          `${gameLabel}: AUTO EXIT FILLED — sold x${fillCount} @ ${(exitPrice * 100).toFixed(0)}c (P&L: ${pnlStr})`,
+          event_id,
+          { exitPrice, fillCount, realizedPnl, reason: "AUTO" }
+        );
+
+        this.writeLog(
+          "EXIT",
+          `AUTO EXIT FILLED: sold x${fillCount} @ ${(exitPrice * 100).toFixed(0)}c, P&L: ${pnlStr}`,
+          event_id,
+          { exitPrice, fillCount, realizedPnl, reason: "AUTO" }
+        );
+      } else {
+        // No fills — restore to LONG, backend will retry next tick
+        await this.updatePosition(event_id, {
+          state: side === "HOME" ? "LONG_HOME" : "LONG_AWAY",
+          intent_price: null,
+          intent_contracts: null,
+          intent_side: null,
+          intent_created_at: null,
+        });
+        this.onLog("INFO", `${gameLabel}: Auto exit got no fills — will retry`, event_id);
+      }
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      // Restore to LONG, backend will retry
+      await this.updatePosition(event_id, {
+        state: side === "HOME" ? "LONG_HOME" : "LONG_AWAY",
+        intent_price: null,
+        intent_contracts: null,
+        intent_side: null,
+        intent_created_at: null,
+      });
+      this.onLog("INFO", `${gameLabel}: Auto exit failed — ${errMsg}`, event_id);
+    }
+  }
+
+  /**
    * Reset position to FLAT with a cooldown to prevent the backend
    * from immediately creating another PENDING_ENTRY.
    */
@@ -189,7 +334,7 @@ export class AutopilotPositionManager {
   async executeExit(
     position: AutopilotPosition,
     exitPrice: number,
-    reason: "MANUAL"
+    reason: "MANUAL" | "AUTO_TP" | "AUTO_SL" | "AUTO_LATE_GAME"
   ): Promise<void> {
     const { event_id, ticker, quantity, entry_price, home_team, away_team } = position;
     const gameLabel = `${away_team}@${home_team}`;
@@ -199,7 +344,7 @@ export class AutopilotPositionManager {
     // Set state to EXITING first (prevents double-exit)
     await this.updatePosition(event_id, { state: "EXITING" });
 
-    this.onLog("EXIT", `${gameLabel}: MANUAL EXIT triggered at ${(exitPrice * 100).toFixed(0)}c`, event_id);
+    this.onLog("EXIT", `${gameLabel}: ${reason} EXIT triggered at ${(exitPrice * 100).toFixed(0)}c`, event_id);
 
     try {
       const result = await sellOrder(
@@ -234,14 +379,14 @@ export class AutopilotPositionManager {
 
         this.onLog(
           "EXIT",
-          `${gameLabel}: MANUAL EXIT FILLED — sold x${fillCount} @ ${(exitPrice * 100).toFixed(0)}c (P&L: ${pnlStr})`,
+          `${gameLabel}: ${reason} EXIT FILLED — sold x${fillCount} @ ${(exitPrice * 100).toFixed(0)}c (P&L: ${pnlStr})`,
           event_id,
           { exitPrice, fillCount, realizedPnl, reason }
         );
 
         this.writeLog(
           "EXIT",
-          `MANUAL EXIT FILLED: sold x${fillCount} @ ${(exitPrice * 100).toFixed(0)}c, P&L: ${pnlStr}`,
+          `${reason} EXIT FILLED: sold x${fillCount} @ ${(exitPrice * 100).toFixed(0)}c, P&L: ${pnlStr}`,
           event_id,
           { exitPrice, fillCount, realizedPnl, reason }
         );

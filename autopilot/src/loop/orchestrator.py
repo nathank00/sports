@@ -16,6 +16,7 @@ import aiohttp
 
 from autopilot.src.model.winprob import WinProbModel
 from autopilot.src.loop.game_tracker import TrackedGame
+from autopilot.src.features.constants import REGULATION_SECONDS
 from autopilot.src.trading.decision import (
     TradingConfig,
     evaluate_signal,
@@ -209,6 +210,16 @@ class Orchestrator:
         game_state = tracker.build_game_state()
         model_prob = self.model.predict(game_state)
 
+        # Apply smoothing + pregame blending
+        time_fraction = game_state.seconds_remaining / REGULATION_SECONDS
+        blended_prob = tracker.blender.update(
+            raw_model_prob=model_prob,
+            pregame_home_ml_prob=tracker.pregame_home_ml_prob,
+            time_fraction=time_fraction,
+        )
+        tracker.last_raw_model_prob = model_prob
+        tracker.last_blended_prob = blended_prob
+
         # Refresh Kalshi markets if stale
         if now - tracker.kalshi_markets_updated > KALSHI_REFRESH_INTERVAL:
             tracker.kalshi_markets = await self._fetch_kalshi_markets(session)
@@ -219,7 +230,7 @@ class Orchestrator:
         away_full = ABBR_TO_TEAM.get(away_team, away_team)
 
         signal = evaluate_signal(
-            model_home_prob=model_prob,
+            model_home_prob=blended_prob,
             home_team=home_full,
             away_team=away_full,
             seconds_remaining=seconds_remaining,
@@ -234,6 +245,7 @@ class Orchestrator:
         await self._write_signal(
             tracker=tracker,
             model_prob=model_prob,
+            blended_prob=blended_prob,
             signal=signal,
             period=period,
             seconds_remaining=seconds_remaining,
@@ -251,7 +263,8 @@ class Orchestrator:
         logger.info(
             f"  {away_team} {away_score} @ {home_team} {home_score} "
             f"Q{period} {seconds_remaining:.0f}s | "
-            f"P(home)={model_prob:.1%} | edge={edge_str} | {action}{reason_str}"
+            f"P(home) raw={model_prob:.1%} blended={blended_prob:.1%} | "
+            f"edge={edge_str} | {action}{reason_str}"
         )
 
         # Evaluate trade intents for each active user
@@ -288,6 +301,19 @@ class Orchestrator:
                             f"{user_row.get('user_id', '?')[:8]}...: {e}"
                         )
 
+        # Monitor existing positions for auto-exit (TP/SL/late-game)
+        if tracker.kalshi_markets:
+            try:
+                self.position_manager.monitor_exits(
+                    kalshi_markets=tracker.kalshi_markets,
+                    period=period,
+                    seconds_remaining=seconds_remaining,
+                    home_team=home_team,
+                    away_team=away_team,
+                )
+            except Exception as e:
+                logger.error(f"Exit monitoring error for {home_team} vs {away_team}: {e}")
+
     async def _fetch_kalshi_markets(self, session: aiohttp.ClientSession) -> list[dict]:
         """Fetch open NBA markets from Kalshi.
 
@@ -317,6 +343,7 @@ class Orchestrator:
         self,
         tracker: TrackedGame,
         model_prob: float,
+        blended_prob: float,
         signal,
         period: int,
         seconds_remaining: float,
@@ -333,6 +360,7 @@ class Orchestrator:
             "home_score": home_score,
             "away_score": away_score,
             "model_home_win_prob": round(model_prob, 4),
+            "blended_home_win_prob": round(blended_prob, 4),
             "kalshi_ticker_home": None,
             "kalshi_ticker_away": None,
             "kalshi_home_price": signal.kalshi_home_price,
@@ -344,13 +372,17 @@ class Orchestrator:
             "recommended_side": signal.recommended_side,
             "recommended_ticker": signal.recommended_ticker,
             "reason": signal.reason,
+            "reason_code": getattr(signal, "reason_code", None),
         }
 
         try:
             supabase.table("autopilot_signals").insert(record).execute()
         except Exception as e:
-            # If pregame_spread column doesn't exist yet, retry without it
-            if "pregame_spread" in str(e):
+            err_str = str(e)
+            # If new columns don't exist yet, retry without them
+            if "blended_home_win_prob" in err_str or "reason_code" in err_str or "pregame_spread" in err_str:
+                record.pop("blended_home_win_prob", None)
+                record.pop("reason_code", None)
                 record.pop("pregame_spread", None)
                 try:
                     supabase.table("autopilot_signals").insert(record).execute()
