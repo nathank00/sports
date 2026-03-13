@@ -129,14 +129,15 @@ function mapPositions(raw: KalshiMarketPosition[]): PositionItem[] {
 }
 
 /**
- * Fetch the user's open (unsettled) positions.
- * Returns ALL unsettled positions — filtering happens client-side.
+ * Fetch the user's open (unsettled) positions where position > 0.
+ * count_filter=position is REQUIRED — without it Kalshi does not
+ * populate the position field (returns 0 for everything).
  */
 export async function fetchPositions(): Promise<PositionItem[]> {
   const data = (await kalshiRequest(
     "GET",
     "/trade-api/v2/portfolio/positions",
-    "limit=200&settlement_status=unsettled"
+    "limit=200&settlement_status=unsettled&count_filter=position"
   )) as { market_positions?: KalshiMarketPosition[] };
 
   if (!data.market_positions) return [];
