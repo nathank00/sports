@@ -93,33 +93,23 @@ export async function fetchBalance(): Promise<{
   return { balance, portfolioValue };
 }
 
-/**
- * Fetch the user's open positions.
- */
-export async function fetchPositions(): Promise<PositionItem[]> {
-  const data = (await kalshiRequest(
-    "GET",
-    "/trade-api/v2/portfolio/positions",
-    "limit=200&count_filter=position,total_traded"
-  )) as {
-    market_positions?: Array<{
-      ticker: string;
-      position?: number;
-      market_exposure?: number;
-      market_exposure_dollars?: string;
-      total_traded?: number;
-      total_traded_dollars?: string;
-      realized_pnl?: number;
-      realized_pnl_dollars?: string;
-      fees_paid?: number;
-      fees_paid_dollars?: string;
-      resting_orders_count?: number;
-    }>;
-  };
+/** Shape returned by Kalshi positions endpoints. */
+interface KalshiMarketPosition {
+  ticker: string;
+  position?: number;
+  market_exposure?: number;
+  market_exposure_dollars?: string;
+  total_traded?: number;
+  total_traded_dollars?: string;
+  realized_pnl?: number;
+  realized_pnl_dollars?: string;
+  fees_paid?: number;
+  fees_paid_dollars?: string;
+  resting_orders_count?: number;
+}
 
-  if (!data.market_positions) return [];
-
-  return data.market_positions.map((p) => ({
+function mapPositions(raw: KalshiMarketPosition[]): PositionItem[] {
+  return raw.map((p) => ({
     ticker: p.ticker,
     position: p.position ?? 0,
     exposure: p.market_exposure_dollars
@@ -136,6 +126,38 @@ export async function fetchPositions(): Promise<PositionItem[]> {
       : (p.fees_paid ?? 0) / 100,
     restingOrders: p.resting_orders_count ?? 0,
   }));
+}
+
+/**
+ * Fetch the user's open (unsettled) positions.
+ * Uses settlement_status=unsettled and count_filter=position to only
+ * return markets where we currently hold contracts — not historical trades.
+ */
+export async function fetchPositions(): Promise<PositionItem[]> {
+  const data = (await kalshiRequest(
+    "GET",
+    "/trade-api/v2/portfolio/positions",
+    "limit=200&settlement_status=unsettled&count_filter=position"
+  )) as { market_positions?: KalshiMarketPosition[] };
+
+  if (!data.market_positions) return [];
+  return mapPositions(data.market_positions);
+}
+
+/**
+ * Fetch positions for a specific event (game).
+ * Uses event_ticker filter so we only get markets for that one game.
+ * This is far more reliable than fetching all 200 positions and scanning.
+ */
+export async function fetchPositionsForEvent(eventTicker: string): Promise<PositionItem[]> {
+  const data = (await kalshiRequest(
+    "GET",
+    "/trade-api/v2/portfolio/positions",
+    `event_ticker=${encodeURIComponent(eventTicker)}&settlement_status=unsettled&count_filter=position`
+  )) as { market_positions?: KalshiMarketPosition[] };
+
+  if (!data.market_positions) return [];
+  return mapPositions(data.market_positions);
 }
 
 /**
