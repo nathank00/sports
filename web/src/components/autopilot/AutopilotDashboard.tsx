@@ -624,11 +624,26 @@ export default function AutopilotDashboard({ userId }: Props) {
     [positions]
   );
 
-  const gameList = Array.from(games.values()).sort((a, b) => {
-    const aLive = a.latestSignal !== null;
-    const bLive = b.latestSignal !== null;
+  /** Check if a game is finished (Final, Final/OT, etc.). */
+  const isGameFinished = (game: AutopilotGame): boolean => {
+    if (game.statusDetail?.toLowerCase().includes("final")) return true;
+    // Q4 (or later) with 0 seconds remaining = game over
+    if (game.latestSignal) {
+      const { period, seconds_remaining } = game.latestSignal;
+      if (period >= 4 && seconds_remaining === 0) return true;
+    }
+    return false;
+  };
 
-    // Live games first
+  const gameList = Array.from(games.values()).sort((a, b) => {
+    const aFinished = isGameFinished(a);
+    const bFinished = isGameFinished(b);
+    const aLive = a.latestSignal !== null && !aFinished;
+    const bLive = b.latestSignal !== null && !bFinished;
+    const aPregame = a.latestSignal === null;
+    const bPregame = b.latestSignal === null;
+
+    // Priority: Live > Pregame > Finished
     if (aLive && !bLive) return -1;
     if (!aLive && bLive) return 1;
 
@@ -637,10 +652,23 @@ export default function AutopilotDashboard({ userId }: Props) {
       return getGameProgress(b) - getGameProgress(a);
     }
 
+    // Pregame before finished
+    if (aPregame && bFinished) return -1;
+    if (aFinished && bPregame) return 1;
+
     // Both pregame: sort by start time (earliest first)
-    const aTime = a.startTime ? new Date(a.startTime).getTime() : 0;
-    const bTime = b.startTime ? new Date(b.startTime).getTime() : 0;
-    return aTime - bTime;
+    if (aPregame && bPregame) {
+      const aTime = a.startTime ? new Date(a.startTime).getTime() : 0;
+      const bTime = b.startTime ? new Date(b.startTime).getTime() : 0;
+      return aTime - bTime;
+    }
+
+    // Both finished: sort by progress (most recent first)
+    if (aFinished && bFinished) {
+      return getGameProgress(b) - getGameProgress(a);
+    }
+
+    return 0;
   });
 
   const effectiveSettings: AutopilotSettingsV2 = settings || {
@@ -963,6 +991,7 @@ export default function AutopilotDashboard({ userId }: Props) {
                 position={getPositionForGame(game)}
                 edgeThreshold={effectiveSettings.edge_threshold}
                 onManualExit={handleManualExit}
+                isFinished={isGameFinished(game)}
               />
             ))}
           </div>

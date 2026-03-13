@@ -8,6 +8,7 @@ interface Props {
   position: AutopilotPosition | null;
   edgeThreshold: number;
   onManualExit: (position: AutopilotPosition) => void;
+  isFinished?: boolean;
 }
 
 function formatClock(period: number, secondsRemaining: number): string {
@@ -568,6 +569,63 @@ function LiveCard({
   );
 }
 
+// ── Finished card ─────────────────────────────────────────────────────
+
+function FinishedCard({
+  game,
+  position,
+  onManualExit,
+}: {
+  game: AutopilotGame;
+  position: AutopilotPosition | null;
+  onManualExit: (position: AutopilotPosition) => void;
+}) {
+  const s = game.latestSignal!;
+
+  // Determine winner for display
+  const homeWon = s.home_score > s.away_score;
+  const tied = s.home_score === s.away_score;
+  const isOT = s.period > 4;
+
+  return (
+    <div className="rounded-lg border border-neutral-800/60 bg-neutral-900/30 p-4 opacity-60">
+      {/* Final score header */}
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-3">
+          <div className="text-sm">
+            <span className={homeWon && !tied ? "text-neutral-500" : "text-neutral-300 font-semibold"}>
+              {s.away_team}
+            </span>
+            <span className={`font-bold ml-2 ${homeWon && !tied ? "text-neutral-500" : "text-white"}`}>
+              {s.away_score}
+            </span>
+            <span className="text-neutral-700 mx-2">@</span>
+            <span className={`font-bold mr-2 ${!homeWon && !tied ? "text-neutral-500" : "text-white"}`}>
+              {s.home_score}
+            </span>
+            <span className={!homeWon && !tied ? "text-neutral-500" : "text-neutral-300 font-semibold"}>
+              {s.home_team}
+            </span>
+          </div>
+        </div>
+        <span className="text-xs text-neutral-600 font-medium">
+          {game.statusDetail || (isOT ? "Final/OT" : "Final")}
+        </span>
+      </div>
+
+      {/* Position section — show if position exists (realized P&L, etc.) */}
+      {position && position.state !== "FLAT" && (
+        <PositionSection
+          position={position}
+          currentHomePrice={game.kalshiHomePrice ?? s.kalshi_home_price}
+          currentAwayPrice={game.kalshiAwayPrice ?? s.kalshi_away_price}
+          onManualExit={onManualExit}
+        />
+      )}
+    </div>
+  );
+}
+
 // ── Main export ────────────────────────────────────────────────────────
 
 export default function AutopilotGameCard({
@@ -575,7 +633,17 @@ export default function AutopilotGameCard({
   position,
   edgeThreshold,
   onManualExit,
+  isFinished,
 }: Props) {
+  if (isFinished && game.latestSignal) {
+    return (
+      <FinishedCard
+        game={game}
+        position={position}
+        onManualExit={onManualExit}
+      />
+    );
+  }
   if (game.latestSignal) {
     return (
       <LiveCard
