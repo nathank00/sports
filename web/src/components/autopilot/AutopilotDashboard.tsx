@@ -697,14 +697,17 @@ export default function AutopilotDashboard({ userId }: Props) {
 
   const testKalshiPositions = async () => {
     try {
-      const raw = await debugFetchPositionsRaw();
-      console.log("[TEST] Raw Kalshi API response:", raw);
-      // Show first 2000 chars in alert so we can see the actual response
-      alert(raw.length > 2000 ? raw.substring(0, 2000) + "\n\n... (truncated)" : raw);
+      const positions = await fetchPositions();
+      const active = positions.filter((p) => p.position > 0);
+      const summary = active.length > 0
+        ? active.map((p) => `${p.ticker} x${p.position}`).join("\n")
+        : "NO ACTIVE POSITIONS FOUND";
+      alert(`Kalshi returned ${positions.length} total, ${active.length} with contracts:\n\n${summary}`);
+      console.log("[TEST] All positions:", positions);
+      console.log("[TEST] Active:", active);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      alert(`DEBUG FAILED: ${msg}`);
-      console.error("[TEST] debug error:", e);
+      alert(`fetchPositions() FAILED: ${msg}`);
     }
   };
 

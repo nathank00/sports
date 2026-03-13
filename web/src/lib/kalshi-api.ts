@@ -125,37 +125,59 @@ export async function fetchBalance(): Promise<{
   return { balance, portfolioValue };
 }
 
-/** Shape returned by Kalshi positions endpoints. */
+/**
+ * Shape returned by Kalshi positions endpoints.
+ * Kalshi uses _fp (string) suffixed fields for decimal values,
+ * e.g. position_fp: "3.00" instead of position: 3.
+ */
 interface KalshiMarketPosition {
   ticker: string;
+  // Kalshi returns BOTH integer cents and string dollar fields.
+  // The _fp / _dollars string fields are the reliable ones.
   position?: number;
+  position_fp?: string;
   market_exposure?: number;
   market_exposure_dollars?: string;
+  market_exposure_fp?: string;
   total_traded?: number;
   total_traded_dollars?: string;
+  total_traded_fp?: string;
   realized_pnl?: number;
   realized_pnl_dollars?: string;
+  realized_pnl_fp?: string;
   fees_paid?: number;
   fees_paid_dollars?: string;
+  fees_paid_fp?: string;
   resting_orders_count?: number;
 }
 
 function mapPositions(raw: KalshiMarketPosition[]): PositionItem[] {
   return raw.map((p) => ({
     ticker: p.ticker,
-    position: p.position ?? 0,
-    exposure: p.market_exposure_dollars
-      ? parseFloat(p.market_exposure_dollars)
-      : (p.market_exposure ?? 0) / 100,
-    totalTraded: p.total_traded_dollars
-      ? parseFloat(p.total_traded_dollars)
-      : (p.total_traded ?? 0) / 100,
-    realizedPnl: p.realized_pnl_dollars
-      ? parseFloat(p.realized_pnl_dollars)
-      : (p.realized_pnl ?? 0) / 100,
-    feesPaid: p.fees_paid_dollars
-      ? parseFloat(p.fees_paid_dollars)
-      : (p.fees_paid ?? 0) / 100,
+    // position_fp is the source of truth (e.g. "3.00")
+    position: p.position_fp
+      ? parseFloat(p.position_fp)
+      : (p.position ?? 0),
+    exposure: p.market_exposure_fp
+      ? parseFloat(p.market_exposure_fp)
+      : p.market_exposure_dollars
+        ? parseFloat(p.market_exposure_dollars)
+        : (p.market_exposure ?? 0) / 100,
+    totalTraded: p.total_traded_fp
+      ? parseFloat(p.total_traded_fp)
+      : p.total_traded_dollars
+        ? parseFloat(p.total_traded_dollars)
+        : (p.total_traded ?? 0) / 100,
+    realizedPnl: p.realized_pnl_fp
+      ? parseFloat(p.realized_pnl_fp)
+      : p.realized_pnl_dollars
+        ? parseFloat(p.realized_pnl_dollars)
+        : (p.realized_pnl ?? 0) / 100,
+    feesPaid: p.fees_paid_fp
+      ? parseFloat(p.fees_paid_fp)
+      : p.fees_paid_dollars
+        ? parseFloat(p.fees_paid_dollars)
+        : (p.fees_paid ?? 0) / 100,
     restingOrders: p.resting_orders_count ?? 0,
   }));
 }
