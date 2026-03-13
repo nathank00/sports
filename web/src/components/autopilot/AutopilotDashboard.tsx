@@ -222,6 +222,10 @@ export default function AutopilotDashboard({ userId }: Props) {
           const map = new Map<string, AutopilotPosition>();
           for (const pos of data as AutopilotPosition[]) {
             map.set(pos.event_id, pos);
+            // Forward any pending intents to position manager for execution
+            if (pos.state === "PENDING_ENTRY" || pos.state === "PENDING_EXIT") {
+              positionManagerRef.current?.handlePositionChange(pos);
+            }
           }
           setPositions(map);
         }
@@ -357,6 +361,40 @@ export default function AutopilotDashboard({ userId }: Props) {
       supabase.removeChannel(channel);
     };
   }, []);
+
+  // ── Position polling fallback (catches PENDING_ENTRY/EXIT if Realtime misses them) ──
+
+  useEffect(() => {
+    const pollPendingPositions = async () => {
+      try {
+        const { data } = await supabase
+          .from("autopilot_positions")
+          .select("*")
+          .eq("user_id", userId)
+          .in("state", ["PENDING_ENTRY", "PENDING_EXIT"]);
+
+        if (data && data.length > 0) {
+          for (const pos of data as AutopilotPosition[]) {
+            // Update React state so UI reflects the position
+            setPositions((prev) => {
+              const next = new Map(prev);
+              next.set(pos.event_id, pos);
+              return next;
+            });
+            // Forward to position manager for execution
+            positionManagerRef.current?.handlePositionChange(pos);
+          }
+        }
+      } catch (e) {
+        console.error("Position poll error:", e);
+      }
+    };
+
+    // Poll immediately on mount, then every 5 seconds
+    pollPendingPositions();
+    const interval = setInterval(pollPendingPositions, 5_000);
+    return () => clearInterval(interval);
+  }, [userId]);
 
   // ── Signal polling fallback (in case Realtime subscription isn't working) ──
 
