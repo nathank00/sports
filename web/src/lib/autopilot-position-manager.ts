@@ -17,6 +17,8 @@ import {
   placeOrder,
   sellOrder,
   fetchNbaMarkets,
+  getOrder,
+  cancelOrder,
 } from "@/lib/kalshi-api";
 import type { AutopilotPosition } from "@/lib/types";
 
@@ -71,6 +73,18 @@ export class AutopilotPositionManager {
 
   /**
    * Execute a buy order from a PENDING_ENTRY intent.
+   *
+   * CRITICAL FIX: After placing a limit order, the initial API response may
+   * show fill_count=0 even though the order fills moments later within its
+   * 30-second expiration. We now:
+   *   1. Place the order
+   *   2. If immediate fills → update to LONG (fast path)
+   *   3. If 0 fills → wait 3s → re-check order status via getOrder()
+   *   4. If filled on re-check → update to LONG
+   *   5. If still unfilled → cancelOrder() → reset to FLAT
+   *
+   * This prevents the system from resetting to FLAT while a resting order
+   * fills on Kalshi, which caused untracked position accumulation.
    */
   private async executeEntry(position: AutopilotPosition): Promise<void> {
     const {
@@ -91,15 +105,21 @@ export class AutopilotPositionManager {
       const intentAge = Date.now() - new Date(intent_created_at).getTime();
       if (intentAge > 35_000) {
         this.onLog("INFO", `${gameLabel}: Intent expired (${Math.round(intentAge / 1000)}s old)`, event_id);
+        this.writeLog("INFO", `Intent expired (${Math.round(intentAge / 1000)}s old)`, event_id);
         await this.resetToFlatWithCooldown(event_id);
         return;
       }
     }
 
     if (!ticker || !intent_price || !intent_contracts) {
-      this.onLog("INFO", `${gameLabel}: Invalid intent data`, event_id);
+      this.onLog("INFO", `${gameLabel}: Invalid intent data (ticker=${ticker}, price=${intent_price}, contracts=${intent_contracts})`, event_id);
+      this.writeLog("INFO", `Invalid intent data — skipping`, event_id);
       return;
     }
+
+    const sideLabel = side ?? "UNKNOWN";
+    this.onLog("INFO", `${gameLabel}: Executing ${sideLabel} entry — ${ticker} x${intent_contracts}`, event_id);
+    this.writeLog("INFO", `Executing ${sideLabel} entry: ${ticker} x${intent_contracts}`, event_id);
 
     // Fetch fresh Kalshi price
     let freshPrice = intent_price;
@@ -119,6 +139,7 @@ export class AutopilotPositionManager {
     }
 
     // Place buy order
+    let orderId: string | null = null;
     try {
       const result = await placeOrder(
         ticker,
@@ -128,57 +149,182 @@ export class AutopilotPositionManager {
         "buy"
       );
 
-      const fillCount = result.fillCount ?? 0;
+      orderId = result.orderId;
+      const immediateFills = result.fillCount ?? 0;
 
-      if (fillCount > 0) {
-        const entryPrice = freshPrice;
-        const newState = side === "HOME" ? "LONG_HOME" : "LONG_AWAY";
+      this.onLog(
+        "INFO",
+        `${gameLabel}: Order placed (${orderId}) — immediate fills: ${immediateFills}/${intent_contracts}`,
+        event_id
+      );
+      this.writeLog(
+        "INFO",
+        `Order placed (${orderId}): immediate fills ${immediateFills}/${intent_contracts}`,
+        event_id,
+        { orderId, immediateFills, freshPrice }
+      );
 
-        await this.updatePosition(event_id, {
-          state: newState,
-          entry_price: entryPrice,
-          quantity: fillCount,
-          entry_timestamp: new Date().toISOString(),
-          intent_price: null,
-          intent_contracts: null,
-          intent_side: null,
-          intent_created_at: null,
-        });
+      if (immediateFills >= intent_contracts) {
+        // Fully filled immediately — fast path
+        await this.handleEntryFill(event_id, sideLabel, ticker, freshPrice, immediateFills, gameLabel);
+        return;
+      }
+
+      // Not fully filled — wait 3s then re-check order status
+      this.onLog("INFO", `${gameLabel}: Waiting 3s to verify order status...`, event_id);
+      await new Promise((r) => setTimeout(r, 3000));
+
+      // Re-check order status
+      let finalFills = immediateFills;
+      try {
+        const orderStatus = await getOrder(orderId);
+        finalFills = orderStatus.fillCount ?? 0;
 
         this.onLog(
-          "TRADE",
-          `${gameLabel}: FILLED ${side} YES x${fillCount} @ ${(entryPrice * 100).toFixed(0)}c`,
-          event_id,
-          { ticker, fillCount, entryPrice }
+          "INFO",
+          `${gameLabel}: Order re-check — status: ${orderStatus.status}, fills: ${finalFills}/${intent_contracts}`,
+          event_id
         );
-
         this.writeLog(
-          "TRADE",
-          `ENTRY FILLED: ${side} YES x${fillCount} @ ${(entryPrice * 100).toFixed(0)}c`,
+          "INFO",
+          `Order re-check (${orderId}): status=${orderStatus.status}, fills=${finalFills}/${intent_contracts}`,
           event_id,
-          { ticker, fillCount, entryPrice }
+          { orderId, finalFills, status: orderStatus.status }
         );
+      } catch (e) {
+        const errMsg = e instanceof Error ? e.message : String(e);
+        this.onLog("INFO", `${gameLabel}: Could not re-check order status: ${errMsg}`, event_id);
+        this.writeLog("INFO", `Order re-check failed: ${errMsg}`, event_id);
+        // Use immediate fills as fallback
+      }
+
+      if (finalFills > 0) {
+        // Got fills (either immediate or after wait)
+        // Cancel any remaining resting portion first
+        if (finalFills < intent_contracts) {
+          await this.safeCancelOrder(orderId, gameLabel, event_id);
+        }
+        await this.handleEntryFill(event_id, sideLabel, ticker, freshPrice, finalFills, gameLabel);
       } else {
-        // No fills — reset to FLAT with cooldown to prevent re-entry loop
+        // Zero fills after 3s — cancel the resting order, then reset
+        await this.safeCancelOrder(orderId, gameLabel, event_id);
         await this.resetToFlatWithCooldown(event_id);
-        this.onLog("INFO", `${gameLabel}: Order placed but no fills — cooldown applied`, event_id);
-        this.writeLog("INFO", "Entry order got no fills — cooldown applied", event_id);
+        this.onLog("INFO", `${gameLabel}: No fills after 3s — order cancelled, cooldown applied`, event_id);
+        this.writeLog("INFO", "No fills after 3s verification — order cancelled, cooldown applied", event_id, { orderId });
       }
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
       this.onLog("INFO", `${gameLabel}: Order failed — ${errMsg}`, event_id);
       this.writeLog("INFO", `Entry order failed: ${errMsg}`, event_id);
 
-      // Reset to FLAT with cooldown to prevent re-entry loop
+      // If we got an orderId, try to cancel in case it partially submitted
+      if (orderId) {
+        await this.safeCancelOrder(orderId, gameLabel, event_id);
+      }
+
+      // Reset to FLAT with cooldown
       await this.resetToFlatWithCooldown(event_id);
+    }
+  }
+
+  /**
+   * Handle a confirmed entry fill — update position to LONG.
+   * This is the critical state transition: if this fails, we have
+   * contracts on Kalshi that the system doesn't know about.
+   */
+  private async handleEntryFill(
+    eventId: string,
+    side: string,
+    ticker: string,
+    entryPrice: number,
+    fillCount: number,
+    gameLabel: string
+  ): Promise<void> {
+    const newState = side === "HOME" ? "LONG_HOME" : "LONG_AWAY";
+
+    // CRITICAL: This update MUST succeed. Retry aggressively.
+    const success = await this.updatePosition(eventId, {
+      state: newState as "LONG_HOME" | "LONG_AWAY",
+      entry_price: entryPrice,
+      quantity: fillCount,
+      entry_timestamp: new Date().toISOString(),
+      intent_price: null,
+      intent_contracts: null,
+      intent_side: null,
+      intent_created_at: null,
+    });
+
+    if (!success) {
+      // updatePosition already retried once internally.
+      // Try one more time after a longer delay.
+      await new Promise((r) => setTimeout(r, 2000));
+      const retrySuccess = await this.updatePosition(eventId, {
+        state: newState as "LONG_HOME" | "LONG_AWAY",
+        entry_price: entryPrice,
+        quantity: fillCount,
+        entry_timestamp: new Date().toISOString(),
+        intent_price: null,
+        intent_contracts: null,
+        intent_side: null,
+        intent_created_at: null,
+      });
+
+      if (!retrySuccess) {
+        // All retries failed — this is a crisis. Log everywhere possible.
+        const msg =
+          `CRITICAL STATE DESYNC: Filled ${side} x${fillCount} @ ${(entryPrice * 100).toFixed(0)}c ` +
+          `on ${ticker} but FAILED to update position to ${newState}. ` +
+          `Kalshi has the position, Supabase does NOT. Manual intervention required.`;
+        this.onLog("ERROR", `${gameLabel}: ${msg}`, eventId);
+        this.writeLog("ERROR", msg, eventId, { ticker, fillCount, entryPrice, newState });
+        console.error(`[AUTOPILOT CRITICAL] ${msg}`);
+        return;
+      }
+    }
+
+    this.onLog(
+      "TRADE",
+      `${gameLabel}: FILLED ${side} YES x${fillCount} @ ${(entryPrice * 100).toFixed(0)}c`,
+      eventId,
+      { ticker, fillCount, entryPrice }
+    );
+
+    this.writeLog(
+      "TRADE",
+      `ENTRY FILLED: ${side} YES x${fillCount} @ ${(entryPrice * 100).toFixed(0)}c`,
+      eventId,
+      { ticker, fillCount, entryPrice }
+    );
+  }
+
+  /**
+   * Safely cancel a resting order. Never throws — logs errors instead.
+   */
+  private async safeCancelOrder(
+    orderId: string,
+    gameLabel: string,
+    eventId: string
+  ): Promise<void> {
+    try {
+      await cancelOrder(orderId);
+      this.onLog("INFO", `${gameLabel}: Cancelled resting order ${orderId}`, eventId);
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      // "not_found" or "already cancelled" is expected if order expired or fully filled
+      if (errMsg.includes("not_found") || errMsg.includes("cancel") || errMsg.includes("404")) {
+        this.onLog("INFO", `${gameLabel}: Order ${orderId} already expired/cancelled`, eventId);
+      } else {
+        this.onLog("INFO", `${gameLabel}: Failed to cancel order ${orderId}: ${errMsg}`, eventId);
+        this.writeLog("INFO", `Failed to cancel resting order: ${errMsg}`, eventId, { orderId });
+      }
     }
   }
 
   /**
    * Execute an auto-exit from a PENDING_EXIT intent (TP/SL/late-game).
    *
-   * Similar to executeEntry but for sell orders. If the sell fails or
-   * gets no fills, restores to LONG_* so the backend can retry next tick.
+   * Uses the same wait-and-verify pattern as executeEntry to prevent
+   * the system from thinking a sell didn't fill when it actually did.
    */
   private async executeAutoExit(position: AutopilotPosition): Promise<void> {
     const {
@@ -194,15 +340,17 @@ export class AutopilotPositionManager {
     } = position;
 
     const gameLabel = `${away_team}@${home_team}`;
+    const longState = side === "HOME" ? "LONG_HOME" : "LONG_AWAY";
 
     // Validate intent hasn't expired
     if (intent_created_at) {
       const intentAge = Date.now() - new Date(intent_created_at).getTime();
       if (intentAge > 35_000) {
         this.onLog("INFO", `${gameLabel}: Exit intent expired (${Math.round(intentAge / 1000)}s old)`, event_id);
+        this.writeLog("INFO", `Exit intent expired (${Math.round(intentAge / 1000)}s old)`, event_id);
         // Restore to LONG so backend can retry
         await this.updatePosition(event_id, {
-          state: side === "HOME" ? "LONG_HOME" : "LONG_AWAY",
+          state: longState,
           intent_price: null,
           intent_contracts: null,
           intent_side: null,
@@ -213,6 +361,9 @@ export class AutopilotPositionManager {
     }
 
     if (!ticker || !quantity || quantity <= 0) return;
+
+    this.onLog("INFO", `${gameLabel}: Executing auto-exit — selling ${ticker} x${quantity}`, event_id);
+    this.writeLog("INFO", `Executing auto-exit: selling ${ticker} x${quantity}`, event_id);
 
     // Fetch fresh bid price for exit
     let exitPrice = intent_price || 0;
@@ -234,6 +385,7 @@ export class AutopilotPositionManager {
     // Set state to EXITING (prevents double-exit)
     await this.updatePosition(event_id, { state: "EXITING" });
 
+    let orderId: string | null = null;
     try {
       const result = await sellOrder(
         ticker,
@@ -242,69 +394,141 @@ export class AutopilotPositionManager {
         exitPrice.toFixed(2)
       );
 
-      const fillCount = result.fillCount ?? 0;
+      orderId = result.orderId;
+      const immediateFills = result.fillCount ?? 0;
 
-      if (fillCount > 0) {
-        const realizedPnl = entry_price
-          ? (exitPrice - entry_price) * fillCount
-          : null;
+      this.writeLog(
+        "INFO",
+        `Exit order placed (${orderId}): immediate fills ${immediateFills}/${quantity}`,
+        event_id,
+        { orderId, immediateFills, exitPrice }
+      );
 
-        const cooldownUntil = new Date(
-          Date.now() + ENTRY_FAILURE_COOLDOWN * 1000
-        ).toISOString();
+      if (immediateFills >= quantity) {
+        // Fully filled immediately
+        await this.handleExitFill(event_id, ticker, exitPrice, immediateFills, entry_price, gameLabel);
+        return;
+      }
 
-        await this.updatePosition(event_id, {
-          state: "LOCKED",
-          exit_price: exitPrice,
-          exit_timestamp: new Date().toISOString(),
-          realized_pnl: realizedPnl ? Math.round(realizedPnl * 100) / 100 : null,
-          cooldown_until: cooldownUntil,
-          intent_price: null,
-          intent_contracts: null,
-          intent_side: null,
-          intent_created_at: null,
-        });
+      // Wait 3s and re-check
+      this.onLog("INFO", `${gameLabel}: Waiting 3s to verify exit order...`, event_id);
+      await new Promise((r) => setTimeout(r, 3000));
 
-        const pnlStr = realizedPnl != null
-          ? `${realizedPnl >= 0 ? "+" : ""}$${realizedPnl.toFixed(2)}`
-          : "unknown";
-
-        this.onLog(
-          "EXIT",
-          `${gameLabel}: AUTO EXIT FILLED — sold x${fillCount} @ ${(exitPrice * 100).toFixed(0)}c (P&L: ${pnlStr})`,
-          event_id,
-          { exitPrice, fillCount, realizedPnl, reason: "AUTO" }
-        );
-
+      let finalFills = immediateFills;
+      try {
+        const orderStatus = await getOrder(orderId);
+        finalFills = orderStatus.fillCount ?? 0;
         this.writeLog(
-          "EXIT",
-          `AUTO EXIT FILLED: sold x${fillCount} @ ${(exitPrice * 100).toFixed(0)}c, P&L: ${pnlStr}`,
+          "INFO",
+          `Exit order re-check (${orderId}): status=${orderStatus.status}, fills=${finalFills}/${quantity}`,
           event_id,
-          { exitPrice, fillCount, realizedPnl, reason: "AUTO" }
+          { orderId, finalFills, status: orderStatus.status }
         );
+      } catch (e) {
+        const errMsg = e instanceof Error ? e.message : String(e);
+        this.onLog("INFO", `${gameLabel}: Could not re-check exit order: ${errMsg}`, event_id);
+      }
+
+      if (finalFills > 0) {
+        if (finalFills < quantity) {
+          await this.safeCancelOrder(orderId, gameLabel, event_id);
+        }
+        await this.handleExitFill(event_id, ticker, exitPrice, finalFills, entry_price, gameLabel);
       } else {
-        // No fills — restore to LONG, backend will retry next tick
+        // No fills — cancel and restore to LONG
+        await this.safeCancelOrder(orderId, gameLabel, event_id);
         await this.updatePosition(event_id, {
-          state: side === "HOME" ? "LONG_HOME" : "LONG_AWAY",
+          state: longState,
           intent_price: null,
           intent_contracts: null,
           intent_side: null,
           intent_created_at: null,
         });
-        this.onLog("INFO", `${gameLabel}: Auto exit got no fills — will retry`, event_id);
+        this.onLog("INFO", `${gameLabel}: Auto exit no fills after 3s — will retry`, event_id);
+        this.writeLog("INFO", "Auto exit no fills after 3s — order cancelled, will retry", event_id, { orderId });
       }
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
+      if (orderId) {
+        await this.safeCancelOrder(orderId, gameLabel, event_id);
+      }
       // Restore to LONG, backend will retry
       await this.updatePosition(event_id, {
-        state: side === "HOME" ? "LONG_HOME" : "LONG_AWAY",
+        state: longState,
         intent_price: null,
         intent_contracts: null,
         intent_side: null,
         intent_created_at: null,
       });
       this.onLog("INFO", `${gameLabel}: Auto exit failed — ${errMsg}`, event_id);
+      this.writeLog("INFO", `Auto exit order failed: ${errMsg}`, event_id);
     }
+  }
+
+  /**
+   * Handle a confirmed exit fill — update position to LOCKED.
+   */
+  private async handleExitFill(
+    eventId: string,
+    ticker: string,
+    exitPrice: number,
+    fillCount: number,
+    entryPrice: number | null,
+    gameLabel: string
+  ): Promise<void> {
+    const realizedPnl = entryPrice
+      ? (exitPrice - entryPrice) * fillCount
+      : null;
+
+    const cooldownUntil = new Date(
+      Date.now() + ENTRY_FAILURE_COOLDOWN * 1000
+    ).toISOString();
+
+    const success = await this.updatePosition(eventId, {
+      state: "LOCKED",
+      exit_price: exitPrice,
+      exit_timestamp: new Date().toISOString(),
+      realized_pnl: realizedPnl ? Math.round(realizedPnl * 100) / 100 : null,
+      cooldown_until: cooldownUntil,
+      intent_price: null,
+      intent_contracts: null,
+      intent_side: null,
+      intent_created_at: null,
+    });
+
+    if (!success) {
+      // Retry after delay
+      await new Promise((r) => setTimeout(r, 2000));
+      await this.updatePosition(eventId, {
+        state: "LOCKED",
+        exit_price: exitPrice,
+        exit_timestamp: new Date().toISOString(),
+        realized_pnl: realizedPnl ? Math.round(realizedPnl * 100) / 100 : null,
+        cooldown_until: cooldownUntil,
+        intent_price: null,
+        intent_contracts: null,
+        intent_side: null,
+        intent_created_at: null,
+      });
+    }
+
+    const pnlStr = realizedPnl != null
+      ? `${realizedPnl >= 0 ? "+" : ""}$${realizedPnl.toFixed(2)}`
+      : "unknown";
+
+    this.onLog(
+      "EXIT",
+      `${gameLabel}: EXIT FILLED — sold x${fillCount} @ ${(exitPrice * 100).toFixed(0)}c (P&L: ${pnlStr})`,
+      eventId,
+      { exitPrice, fillCount, realizedPnl, reason: "AUTO" }
+    );
+
+    this.writeLog(
+      "EXIT",
+      `EXIT FILLED: sold x${fillCount} @ ${(exitPrice * 100).toFixed(0)}c, P&L: ${pnlStr}`,
+      eventId,
+      { exitPrice, fillCount, realizedPnl, reason: "AUTO", ticker }
+    );
   }
 
   /**
@@ -330,6 +554,7 @@ export class AutopilotPositionManager {
 
   /**
    * Execute an exit: place sell order, update position state.
+   * Uses wait-and-verify pattern to prevent phantom unfilled exits.
    */
   async executeExit(
     position: AutopilotPosition,
@@ -338,6 +563,7 @@ export class AutopilotPositionManager {
   ): Promise<void> {
     const { event_id, ticker, quantity, entry_price, home_team, away_team } = position;
     const gameLabel = `${away_team}@${home_team}`;
+    const longState = position.side === "HOME" ? "LONG_HOME" : "LONG_AWAY";
 
     if (!ticker || !quantity || quantity <= 0) return;
 
@@ -345,7 +571,9 @@ export class AutopilotPositionManager {
     await this.updatePosition(event_id, { state: "EXITING" });
 
     this.onLog("EXIT", `${gameLabel}: ${reason} EXIT triggered at ${(exitPrice * 100).toFixed(0)}c`, event_id);
+    this.writeLog("EXIT", `${reason} EXIT triggered: selling ${ticker} x${quantity} @ ${(exitPrice * 100).toFixed(0)}c`, event_id);
 
+    let orderId: string | null = null;
     try {
       const result = await sellOrder(
         ticker,
@@ -354,58 +582,57 @@ export class AutopilotPositionManager {
         exitPrice.toFixed(2)
       );
 
-      const fillCount = result.fillCount ?? 0;
+      orderId = result.orderId;
+      const immediateFills = result.fillCount ?? 0;
 
-      if (fillCount > 0) {
-        const realizedPnl = entry_price
-          ? (exitPrice - entry_price) * fillCount
-          : null;
+      this.writeLog(
+        "INFO",
+        `${reason} exit order placed (${orderId}): immediate fills ${immediateFills}/${quantity}`,
+        event_id,
+        { orderId, immediateFills, exitPrice, reason }
+      );
 
-        const cooldownUntil = new Date(
-          Date.now() + ENTRY_FAILURE_COOLDOWN * 1000
-        ).toISOString();
+      if (immediateFills >= quantity) {
+        await this.handleExitFill(event_id, ticker, exitPrice, immediateFills, entry_price, gameLabel);
+        return;
+      }
 
-        await this.updatePosition(event_id, {
-          state: "LOCKED",
-          exit_price: exitPrice,
-          exit_timestamp: new Date().toISOString(),
-          realized_pnl: realizedPnl ? Math.round(realizedPnl * 100) / 100 : null,
-          cooldown_until: cooldownUntil,
-        });
+      // Wait 3s and re-check
+      await new Promise((r) => setTimeout(r, 3000));
 
-        const pnlStr = realizedPnl != null
-          ? `${realizedPnl >= 0 ? "+" : ""}$${realizedPnl.toFixed(2)}`
-          : "unknown";
-
-        this.onLog(
-          "EXIT",
-          `${gameLabel}: ${reason} EXIT FILLED — sold x${fillCount} @ ${(exitPrice * 100).toFixed(0)}c (P&L: ${pnlStr})`,
-          event_id,
-          { exitPrice, fillCount, realizedPnl, reason }
-        );
-
+      let finalFills = immediateFills;
+      try {
+        const orderStatus = await getOrder(orderId);
+        finalFills = orderStatus.fillCount ?? 0;
         this.writeLog(
-          "EXIT",
-          `${reason} EXIT FILLED: sold x${fillCount} @ ${(exitPrice * 100).toFixed(0)}c, P&L: ${pnlStr}`,
-          event_id,
-          { exitPrice, fillCount, realizedPnl, reason }
+          "INFO",
+          `${reason} exit re-check (${orderId}): status=${orderStatus.status}, fills=${finalFills}/${quantity}`,
+          event_id
         );
-      } else {
-        // Sell order didn't fill — go back to LONG to retry
-        await this.updatePosition(event_id, {
-          state: position.side === "HOME" ? "LONG_HOME" : "LONG_AWAY",
-        });
+      } catch {
+        // Use immediate fills as fallback
+      }
 
-        this.onLog("INFO", `${gameLabel}: Sell order got no fills — will retry`, event_id);
+      if (finalFills > 0) {
+        if (finalFills < quantity) {
+          await this.safeCancelOrder(orderId, gameLabel, event_id);
+        }
+        await this.handleExitFill(event_id, ticker, exitPrice, finalFills, entry_price, gameLabel);
+      } else {
+        // No fills — cancel and restore
+        await this.safeCancelOrder(orderId, gameLabel, event_id);
+        await this.updatePosition(event_id, { state: longState });
+        this.onLog("INFO", `${gameLabel}: ${reason} exit no fills after 3s — will retry`, event_id);
+        this.writeLog("INFO", `${reason} exit no fills after 3s — order cancelled`, event_id, { orderId });
       }
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
-      // Go back to LONG to retry
-      await this.updatePosition(event_id, {
-        state: position.side === "HOME" ? "LONG_HOME" : "LONG_AWAY",
-      });
-
-      this.onLog("INFO", `${gameLabel}: Sell order failed — ${errMsg}`, event_id);
+      if (orderId) {
+        await this.safeCancelOrder(orderId, gameLabel, event_id);
+      }
+      await this.updatePosition(event_id, { state: longState });
+      this.onLog("INFO", `${gameLabel}: ${reason} exit failed — ${errMsg}`, event_id);
+      this.writeLog("INFO", `${reason} exit order failed: ${errMsg}`, event_id);
     }
   }
 
@@ -435,24 +662,62 @@ export class AutopilotPositionManager {
 
   /**
    * Update a position row in Supabase.
+   *
+   * Checks the { error } response (Supabase JS client doesn't throw)
+   * and retries once on failure. Returns true if successful.
    */
   private async updatePosition(
     eventId: string,
     data: Partial<AutopilotPosition>
-  ): Promise<void> {
-    try {
-      await supabase
-        .from("autopilot_positions")
-        .update({ ...data, updated_at: new Date().toISOString() })
-        .eq("user_id", this.userId)
-        .eq("event_id", eventId);
-    } catch (e) {
-      console.error("Failed to update position:", e);
+  ): Promise<boolean> {
+    const payload = { ...data, updated_at: new Date().toISOString() };
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const { error } = await supabase
+          .from("autopilot_positions")
+          .update(payload)
+          .eq("user_id", this.userId)
+          .eq("event_id", eventId);
+
+        if (!error) return true;
+
+        console.error(
+          `updatePosition failed (attempt ${attempt + 1}): ${error.message}`
+        );
+
+        // On first failure, wait 500ms then retry
+        if (attempt === 0) {
+          await new Promise((r) => setTimeout(r, 500));
+        }
+      } catch (e) {
+        console.error(
+          `updatePosition exception (attempt ${attempt + 1}):`,
+          e
+        );
+        if (attempt === 0) {
+          await new Promise((r) => setTimeout(r, 500));
+        }
+      }
     }
+
+    // Both attempts failed — write an error log so it's visible in the UI
+    this.writeLog(
+      "ERROR",
+      `CRITICAL: Failed to update position state for event ${eventId}. ` +
+        `Attempted: ${JSON.stringify(data)}. ` +
+        `Position may be out of sync with Kalshi.`,
+      eventId
+    );
+
+    return false;
   }
 
   /**
-   * Write a log entry to Supabase (persistent).
+   * Write a log entry to Supabase (persistent, visible in UI LOGS tab).
+   *
+   * Checks { error } and retries once. Log failures are reported to
+   * console but never throw — they must not break trade execution.
    */
   private async writeLog(
     level: string,
@@ -460,16 +725,31 @@ export class AutopilotPositionManager {
     eventId?: string,
     metadata?: Record<string, unknown>
   ): Promise<void> {
-    try {
-      await supabase.from("autopilot_logs").insert({
-        user_id: this.userId,
-        level,
-        message,
-        event_id: eventId ?? null,
-        metadata: metadata ?? null,
-      });
-    } catch {
-      // Silently skip — log failure shouldn't break execution
+    const row = {
+      user_id: this.userId,
+      level,
+      message,
+      event_id: eventId ?? null,
+      metadata: metadata ?? null,
+    };
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const { error } = await supabase.from("autopilot_logs").insert(row);
+        if (!error) return;
+
+        console.error(
+          `writeLog failed (attempt ${attempt + 1}): ${error.message}`
+        );
+        if (attempt === 0) {
+          await new Promise((r) => setTimeout(r, 300));
+        }
+      } catch (e) {
+        console.error(`writeLog exception (attempt ${attempt + 1}):`, e);
+        if (attempt === 0) {
+          await new Promise((r) => setTimeout(r, 300));
+        }
+      }
     }
   }
 
