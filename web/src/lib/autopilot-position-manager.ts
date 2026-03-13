@@ -33,14 +33,192 @@ export type LogCallback = (
   metadata?: Record<string, unknown>
 ) => void;
 
+/** How often to sync Kalshi positions with Supabase (ms). */
+const POSITION_SYNC_INTERVAL = 15_000;
+
 export class AutopilotPositionManager {
   private userId: string;
   private onLog: LogCallback;
   private processingIntents = new Set<string>(); // event_ids being processed
+  private processingGames = new Set<string>(); // game-level lock (event prefix, e.g. "KXNBAGAME-26MAR12OKCBOS")
+  private syncTimer: ReturnType<typeof setInterval> | null = null;
+  private isSyncing = false;
 
   constructor(userId: string, onLog: LogCallback) {
     this.userId = userId;
     this.onLog = onLog;
+    this.startSync();
+  }
+
+  /**
+   * Start the periodic Kalshi → Supabase position sync.
+   * Every 15 seconds, fetches actual Kalshi positions and reconciles
+   * with Supabase state. Catches drift from failed state updates,
+   * untracked fills, or any other desync.
+   */
+  private startSync(): void {
+    // Run once immediately (after a short delay to let the dashboard load)
+    setTimeout(() => this.syncPositions(), 3000);
+
+    this.syncTimer = setInterval(() => this.syncPositions(), POSITION_SYNC_INTERVAL);
+  }
+
+  /**
+   * Fetch Kalshi portfolio + Supabase position states, reconcile any drift.
+   *
+   * Cases handled:
+   * 1. Kalshi has a position, Supabase says FLAT → sync to LONG (untracked fill)
+   * 2. Supabase says LONG, Kalshi has 0 contracts → sync to FLAT (untracked exit)
+   * 3. Supabase quantity doesn't match Kalshi → update quantity
+   */
+  private async syncPositions(): Promise<void> {
+    if (this.isSyncing) return; // skip if previous sync still running
+    this.isSyncing = true;
+
+    try {
+      // Fetch both sources in parallel
+      const [kalshiPositions, supabaseResult] = await Promise.all([
+        fetchPositions(),
+        supabase
+          .from("autopilot_positions")
+          .select("*")
+          .eq("user_id", this.userId),
+      ]);
+
+      const supabasePositions = (supabaseResult.data ?? []) as AutopilotPosition[];
+
+      // Filter Kalshi positions to only NBA game markets
+      const nbaPositions = kalshiPositions.filter(
+        (p) => p.ticker.startsWith("KXNBAGAME") && p.position > 0
+      );
+
+      // Build a map of event_prefix → kalshi position for quick lookup
+      const kalshiByPrefix = new Map<string, typeof nbaPositions[0]>();
+      for (const kp of nbaPositions) {
+        const prefix = kp.ticker.substring(0, kp.ticker.lastIndexOf("-"));
+        // If multiple tickers on same game, keep the one with more contracts
+        const existing = kalshiByPrefix.get(prefix);
+        if (!existing || kp.position > existing.position) {
+          kalshiByPrefix.set(prefix, kp);
+        }
+      }
+
+      // Check each Supabase position against Kalshi reality
+      for (const sp of supabasePositions) {
+        const isLong = sp.state === "LONG_HOME" || sp.state === "LONG_AWAY";
+        const isTransitioning = ["PENDING_ENTRY", "PENDING_EXIT", "EXITING"].includes(sp.state);
+
+        // Skip positions that are actively being processed — don't interfere
+        if (this.processingIntents.has(sp.event_id)) continue;
+        if (isTransitioning) continue;
+
+        if (isLong && sp.ticker) {
+          // Case: Supabase says LONG — verify Kalshi still has the position
+          const prefix = sp.ticker.substring(0, sp.ticker.lastIndexOf("-"));
+          const kalshiPos = kalshiByPrefix.get(prefix);
+
+          if (!kalshiPos || kalshiPos.position === 0) {
+            // Kalshi has no position, but Supabase says LONG → untracked exit
+            console.warn(
+              `[Autopilot Sync] Supabase says ${sp.state} on ${sp.ticker} but Kalshi shows no position. Syncing to LOCKED.`
+            );
+            this.onLog(
+              "INFO",
+              `SYNC: ${sp.home_team}/${sp.away_team} — Supabase says ${sp.state} but Kalshi has no position. Marking LOCKED.`,
+              sp.event_id
+            );
+            this.writeLog(
+              "INFO",
+              `Position sync: ${sp.state} on ${sp.ticker} but Kalshi shows 0 contracts. Auto-locking.`,
+              sp.event_id,
+              { previousState: sp.state, ticker: sp.ticker }
+            );
+            await this.updatePosition(sp.event_id, {
+              state: "LOCKED",
+              exit_timestamp: new Date().toISOString(),
+              cooldown_until: new Date(Date.now() + ENTRY_FAILURE_COOLDOWN * 1000).toISOString(),
+            });
+          } else if (kalshiPos.ticker === sp.ticker && kalshiPos.position !== sp.quantity) {
+            // Quantity mismatch — update Supabase to match Kalshi
+            console.warn(
+              `[Autopilot Sync] Quantity mismatch: Supabase says ${sp.quantity} on ${sp.ticker}, Kalshi says ${kalshiPos.position}`
+            );
+            this.writeLog(
+              "INFO",
+              `Position sync: quantity mismatch on ${sp.ticker} — Supabase: ${sp.quantity}, Kalshi: ${kalshiPos.position}. Updating.`,
+              sp.event_id,
+              { supabaseQty: sp.quantity, kalshiQty: kalshiPos.position }
+            );
+            await this.updatePosition(sp.event_id, {
+              quantity: kalshiPos.position,
+            });
+          }
+
+          // Remove from map so we know it's been accounted for
+          kalshiByPrefix.delete(prefix);
+        } else if (sp.state === "FLAT" && sp.ticker) {
+          // Case: Supabase says FLAT — check if Kalshi unexpectedly has a position
+          const prefix = sp.ticker.substring(0, sp.ticker.lastIndexOf("-"));
+          const kalshiPos = kalshiByPrefix.get(prefix);
+
+          if (kalshiPos && kalshiPos.position > 0) {
+            // Kalshi has a position, Supabase says FLAT → untracked fill!
+            console.warn(
+              `[Autopilot Sync] Supabase says FLAT but Kalshi has ${kalshiPos.position} on ${kalshiPos.ticker}. Syncing to LONG.`
+            );
+            this.onLog(
+              "INFO",
+              `SYNC: ${sp.home_team}/${sp.away_team} — found untracked Kalshi position (${kalshiPos.ticker} x${kalshiPos.position}). Syncing.`,
+              sp.event_id
+            );
+            this.writeLog(
+              "TRADE",
+              `Position sync: untracked Kalshi position found! ${kalshiPos.ticker} x${kalshiPos.position}. Syncing to LONG.`,
+              sp.event_id,
+              { ticker: kalshiPos.ticker, contracts: kalshiPos.position }
+            );
+
+            // Determine which side based on ticker
+            const teamSuffix = kalshiPos.ticker.substring(kalshiPos.ticker.lastIndexOf("-") + 1);
+            const isHome = teamSuffix.length === 3 && sp.home_team?.toUpperCase().startsWith(teamSuffix);
+            const longState = isHome ? "LONG_HOME" : "LONG_AWAY";
+            const sideValue = isHome ? "HOME" : "AWAY";
+
+            await this.updatePosition(sp.event_id, {
+              state: longState as "LONG_HOME" | "LONG_AWAY",
+              side: sideValue as "HOME" | "AWAY",
+              ticker: kalshiPos.ticker,
+              quantity: kalshiPos.position,
+              entry_timestamp: new Date().toISOString(),
+              intent_price: null,
+              intent_contracts: null,
+              intent_side: null,
+              intent_created_at: null,
+            });
+
+            kalshiByPrefix.delete(prefix);
+          }
+        }
+      }
+
+      // Any remaining Kalshi positions that weren't matched to a Supabase row
+      // are truly untracked — log them so the user sees them
+      for (const [prefix, kp] of kalshiByPrefix) {
+        console.warn(
+          `[Autopilot Sync] Kalshi position ${kp.ticker} x${kp.position} has no matching Supabase row (prefix: ${prefix})`
+        );
+        this.onLog(
+          "INFO",
+          `SYNC WARNING: Kalshi position ${kp.ticker} x${kp.position} has no matching Supabase position record.`
+        );
+      }
+    } catch (e) {
+      // Sync failures are non-fatal — just log and try again next interval
+      const errMsg = e instanceof Error ? e.message : String(e);
+      console.warn(`[Autopilot Sync] Failed: ${errMsg}`);
+    } finally {
+      this.isSyncing = false;
+    }
   }
 
   /**
@@ -118,18 +296,84 @@ export class AutopilotPositionManager {
       return;
     }
 
-    const sideLabel = side ?? "UNKNOWN";
-    this.onLog("INFO", `${gameLabel}: Executing ${sideLabel} entry — ${ticker} x${intent_contracts}`, event_id);
-    this.writeLog("INFO", `Executing ${sideLabel} entry: ${ticker} x${intent_contracts}`, event_id);
+    // ── GAME-LEVEL LOCK: Block concurrent entries on the same game ──
+    // Prevents race condition where two entries (e.g. OKC and BOS on the
+    // same game) both pass the pre-flight positions check before either fills.
+    const eventPrefix = ticker.substring(0, ticker.lastIndexOf("-"));
+    if (this.processingGames.has(eventPrefix)) {
+      this.onLog("INFO", `${gameLabel}: BLOCKED — already processing an entry for this game`, event_id);
+      this.writeLog("BLOCKED", `Game-level lock: already processing entry for ${eventPrefix}`, event_id, { ticker, eventPrefix });
+      return;
+    }
+    this.processingGames.add(eventPrefix);
 
-    // ── PRE-FLIGHT: Check Kalshi portfolio for existing positions on this game ──
-    // This is the hard safety gate. Before placing ANY buy order, verify
-    // we don't already own contracts on either side of this game.
+    try {
+      await this.executeEntryInner(position, eventPrefix);
+    } finally {
+      this.processingGames.delete(eventPrefix);
+    }
+  }
+
+  /**
+   * Inner entry execution — runs under the game-level lock.
+   */
+  private async executeEntryInner(position: AutopilotPosition, eventPrefix: string): Promise<void> {
+    const { event_id, home_team, away_team, side } = position;
+    const ticker = position.ticker!;
+    const intentPrice = position.intent_price!;
+    const intentContracts = position.intent_contracts!;
+
+    const gameLabel = `${away_team}@${home_team}`;
+    const sideLabel = side ?? "UNKNOWN";
+    this.onLog("INFO", `${gameLabel}: Executing ${sideLabel} entry — ${ticker} x${intentContracts}`, event_id);
+    this.writeLog("INFO", `Executing ${sideLabel} entry: ${ticker} x${intentContracts}`, event_id);
+
+    // ── PRE-FLIGHT SAFETY GATE ──────────────────────────────────────────
+    // Before placing ANY buy order, verify we don't already own contracts
+    // on either side of this game. This is the HARD safety gate:
+    //   - If Kalshi API works → check actual portfolio
+    //   - If Kalshi API fails → BLOCK the order (never proceed blind)
+    //   - Also check Supabase state as belt-and-suspenders backup
+
+    // Gate 1: Check Supabase for any non-FLAT position on this game
+    try {
+      const { data: existingPositions } = await supabase
+        .from("autopilot_positions")
+        .select("state, side, ticker, quantity, event_id")
+        .eq("user_id", this.userId)
+        .eq("game_id", position.game_id)
+        .not("state", "in", '("FLAT")');
+
+      const activePos = existingPositions?.find(
+        (p) => p.event_id !== event_id &&
+               ["LONG_HOME", "LONG_AWAY", "PENDING_ENTRY", "EXITING", "PENDING_EXIT"].includes(p.state)
+      );
+
+      if (activePos) {
+        this.onLog(
+          "INFO",
+          `${gameLabel}: BLOCKED — Supabase shows active position (${activePos.state}) on event ${activePos.event_id}`,
+          event_id
+        );
+        this.writeLog(
+          "BLOCKED",
+          `Supabase state check: active ${activePos.state} position exists on ${activePos.ticker ?? activePos.event_id}. Refusing duplicate entry.`,
+          event_id,
+          { activeState: activePos.state, activeTicker: activePos.ticker, activeEventId: activePos.event_id }
+        );
+        await this.resetToFlatWithCooldown(event_id);
+        return;
+      }
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      this.onLog("INFO", `${gameLabel}: BLOCKED — Supabase state check failed: ${errMsg}`, event_id);
+      this.writeLog("BLOCKED", `Cannot verify Supabase positions — refusing to place order: ${errMsg}`, event_id);
+      return;
+    }
+
+    // Gate 2: Check actual Kalshi portfolio for owned contracts on this game
     try {
       const kalshiPositions = await fetchPositions();
-      // Extract event prefix from ticker (e.g. "KXNBAGAME-26MAR12MILMIA" from
-      // "KXNBAGAME-26MAR12MILMIA-MIA") to catch both sides of the same game
-      const eventPrefix = ticker.substring(0, ticker.lastIndexOf("-"));
       const existingPos = kalshiPositions.find(
         (p) => p.position > 0 && p.ticker.startsWith(eventPrefix)
       );
@@ -174,14 +418,16 @@ export class AutopilotPositionManager {
         return;
       }
     } catch (e) {
-      // If positions check fails, log but proceed — don't silently block a valid trade
+      // CRITICAL: If we can't verify positions on Kalshi, we MUST NOT proceed.
+      // Placing an order without knowing our current state risks duplicates/hedges.
       const errMsg = e instanceof Error ? e.message : String(e);
-      this.onLog("INFO", `${gameLabel}: Pre-flight positions check failed: ${errMsg} — proceeding`, event_id);
-      this.writeLog("INFO", `Pre-flight positions check failed: ${errMsg}`, event_id);
+      this.onLog("INFO", `${gameLabel}: BLOCKED — cannot verify Kalshi positions: ${errMsg}`, event_id);
+      this.writeLog("BLOCKED", `Cannot verify Kalshi positions — refusing to place order: ${errMsg}`, event_id);
+      return;
     }
 
     // Fetch fresh Kalshi price
-    let freshPrice = intent_price;
+    let freshPrice = intentPrice;
     try {
       const markets = await fetchNbaMarkets();
       const market = markets.find((m) => m.ticker === ticker);
@@ -189,7 +435,7 @@ export class AutopilotPositionManager {
         freshPrice = market.yesAsk;
         this.onLog(
           "INFO",
-          `${gameLabel}: Fresh ask ${(freshPrice * 100).toFixed(0)}c (intent was ${(intent_price * 100).toFixed(0)}c)`,
+          `${gameLabel}: Fresh ask ${(freshPrice * 100).toFixed(0)}c (intent was ${(intentPrice * 100).toFixed(0)}c)`,
           event_id
         );
       }
@@ -203,7 +449,7 @@ export class AutopilotPositionManager {
       const result = await placeOrder(
         ticker,
         "yes",
-        intent_contracts,
+        intentContracts,
         freshPrice.toFixed(2),
         "buy"
       );
@@ -257,7 +503,7 @@ export class AutopilotPositionManager {
         if (ownedContracts > 0) {
           this.onLog("INFO", `${gameLabel}: Order errored but we own ${ownedContracts} contract(s) — recording fill`, event_id);
           this.writeLog("INFO", `Order errored but position exists: ${ownedContracts} contract(s)`, event_id);
-          await this.handleEntryFill(event_id, sideLabel, ticker, intent_price, ownedContracts, gameLabel);
+          await this.handleEntryFill(event_id, sideLabel, ticker, intentPrice, ownedContracts, gameLabel);
           return;
         }
       } catch {
@@ -791,6 +1037,9 @@ export class AutopilotPositionManager {
   }
 
   dispose(): void {
-    // No-op — no background tasks to clean up
+    if (this.syncTimer) {
+      clearInterval(this.syncTimer);
+      this.syncTimer = null;
+    }
   }
 }
