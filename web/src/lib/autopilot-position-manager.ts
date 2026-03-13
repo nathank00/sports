@@ -17,6 +17,7 @@ import {
   placeOrder,
   sellOrder,
   fetchNbaMarkets,
+  fetchPositions,
   getOrder,
   cancelOrder,
 } from "@/lib/kalshi-api";
@@ -121,6 +122,64 @@ export class AutopilotPositionManager {
     this.onLog("INFO", `${gameLabel}: Executing ${sideLabel} entry — ${ticker} x${intent_contracts}`, event_id);
     this.writeLog("INFO", `Executing ${sideLabel} entry: ${ticker} x${intent_contracts}`, event_id);
 
+    // ── PRE-FLIGHT: Check Kalshi portfolio for existing positions on this game ──
+    // This is the hard safety gate. Before placing ANY buy order, verify
+    // we don't already own contracts on either side of this game.
+    try {
+      const kalshiPositions = await fetchPositions();
+      // Extract event prefix from ticker (e.g. "KXNBAGAME-26MAR12MILMIA" from
+      // "KXNBAGAME-26MAR12MILMIA-MIA") to catch both sides of the same game
+      const eventPrefix = ticker.substring(0, ticker.lastIndexOf("-"));
+      const existingPos = kalshiPositions.find(
+        (p) => p.position > 0 && p.ticker.startsWith(eventPrefix)
+      );
+
+      if (existingPos) {
+        this.onLog(
+          "INFO",
+          `${gameLabel}: BLOCKED — already own ${existingPos.position} contract(s) on ${existingPos.ticker}`,
+          event_id
+        );
+        this.writeLog(
+          "BLOCKED",
+          `PRE-FLIGHT BLOCKED: Already hold ${existingPos.position} contract(s) on ${existingPos.ticker}. Refusing to place duplicate/hedge order.`,
+          event_id,
+          {
+            existingTicker: existingPos.ticker,
+            existingContracts: existingPos.position,
+            attemptedTicker: ticker,
+          }
+        );
+
+        // Sync Supabase state to reflect the real Kalshi position
+        const existingSide = existingPos.ticker === ticker
+          ? sideLabel
+          : sideLabel === "HOME" ? "AWAY" : "HOME";
+        const existingState = existingSide === "HOME" ? "LONG_HOME" : "LONG_AWAY";
+
+        await this.updatePosition(event_id, {
+          state: existingState as "LONG_HOME" | "LONG_AWAY",
+          side: existingSide as "HOME" | "AWAY",
+          ticker: existingPos.ticker,
+          quantity: existingPos.position,
+          entry_timestamp: new Date().toISOString(),
+          intent_price: null,
+          intent_contracts: null,
+          intent_side: null,
+          intent_created_at: null,
+        });
+
+        this.onLog("INFO", `${gameLabel}: Synced position to ${existingState} (${existingPos.ticker} x${existingPos.position})`, event_id);
+        this.writeLog("INFO", `Position synced from Kalshi: ${existingState} ${existingPos.ticker} x${existingPos.position}`, event_id);
+        return;
+      }
+    } catch (e) {
+      // If positions check fails, log but proceed — don't silently block a valid trade
+      const errMsg = e instanceof Error ? e.message : String(e);
+      this.onLog("INFO", `${gameLabel}: Pre-flight positions check failed: ${errMsg} — proceeding`, event_id);
+      this.writeLog("INFO", `Pre-flight positions check failed: ${errMsg}`, event_id);
+    }
+
     // Fetch fresh Kalshi price
     let freshPrice = intent_price;
     try {
@@ -150,79 +209,61 @@ export class AutopilotPositionManager {
       );
 
       orderId = result.orderId;
-      const immediateFills = result.fillCount ?? 0;
+      this.onLog("INFO", `${gameLabel}: Order placed (${orderId})`, event_id);
+      this.writeLog("INFO", `Order placed (${orderId}) @ ${(freshPrice * 100).toFixed(0)}c`, event_id, { orderId, freshPrice });
+
+      // Wait 3s for the order to potentially fill
+      this.onLog("INFO", `${gameLabel}: Waiting 3s for fill...`, event_id);
+      await new Promise((r) => setTimeout(r, 3000));
+
+      // Cancel any resting remainder before checking positions
+      await this.safeCancelOrder(orderId, gameLabel, event_id);
+
+      // Source of truth: check what we actually own on Kalshi
+      const ownedContracts = await this.getOwnedContracts(ticker);
 
       this.onLog(
         "INFO",
-        `${gameLabel}: Order placed (${orderId}) — immediate fills: ${immediateFills}/${intent_contracts}`,
+        `${gameLabel}: Post-order position check — own ${ownedContracts} contract(s) on ${ticker}`,
         event_id
       );
       this.writeLog(
         "INFO",
-        `Order placed (${orderId}): immediate fills ${immediateFills}/${intent_contracts}`,
+        `Post-order position check: ${ownedContracts} contract(s) on ${ticker}`,
         event_id,
-        { orderId, immediateFills, freshPrice }
+        { orderId, ticker, ownedContracts }
       );
 
-      if (immediateFills >= intent_contracts) {
-        // Fully filled immediately — fast path
-        await this.handleEntryFill(event_id, sideLabel, ticker, freshPrice, immediateFills, gameLabel);
-        return;
-      }
-
-      // Not fully filled — wait 3s then re-check order status
-      this.onLog("INFO", `${gameLabel}: Waiting 3s to verify order status...`, event_id);
-      await new Promise((r) => setTimeout(r, 3000));
-
-      // Re-check order status
-      let finalFills = immediateFills;
-      try {
-        const orderStatus = await getOrder(orderId);
-        finalFills = orderStatus.fillCount ?? 0;
-
-        this.onLog(
-          "INFO",
-          `${gameLabel}: Order re-check — status: ${orderStatus.status}, fills: ${finalFills}/${intent_contracts}`,
-          event_id
-        );
-        this.writeLog(
-          "INFO",
-          `Order re-check (${orderId}): status=${orderStatus.status}, fills=${finalFills}/${intent_contracts}`,
-          event_id,
-          { orderId, finalFills, status: orderStatus.status }
-        );
-      } catch (e) {
-        const errMsg = e instanceof Error ? e.message : String(e);
-        this.onLog("INFO", `${gameLabel}: Could not re-check order status: ${errMsg}`, event_id);
-        this.writeLog("INFO", `Order re-check failed: ${errMsg}`, event_id);
-        // Use immediate fills as fallback
-      }
-
-      if (finalFills > 0) {
-        // Got fills (either immediate or after wait)
-        // Cancel any remaining resting portion first
-        if (finalFills < intent_contracts) {
-          await this.safeCancelOrder(orderId, gameLabel, event_id);
-        }
-        await this.handleEntryFill(event_id, sideLabel, ticker, freshPrice, finalFills, gameLabel);
+      if (ownedContracts > 0) {
+        await this.handleEntryFill(event_id, sideLabel, ticker, freshPrice, ownedContracts, gameLabel);
       } else {
-        // Zero fills after 3s — cancel the resting order, then reset
-        await this.safeCancelOrder(orderId, gameLabel, event_id);
         await this.resetToFlatWithCooldown(event_id);
-        this.onLog("INFO", `${gameLabel}: No fills after 3s — order cancelled, cooldown applied`, event_id);
-        this.writeLog("INFO", "No fills after 3s verification — order cancelled, cooldown applied", event_id, { orderId });
+        this.onLog("INFO", `${gameLabel}: No position after order — cooldown applied`, event_id);
+        this.writeLog("INFO", "No position found after order — cooldown applied", event_id, { orderId });
       }
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
       this.onLog("INFO", `${gameLabel}: Order failed — ${errMsg}`, event_id);
       this.writeLog("INFO", `Entry order failed: ${errMsg}`, event_id);
 
-      // If we got an orderId, try to cancel in case it partially submitted
+      // If we got an orderId, try to cancel
       if (orderId) {
         await this.safeCancelOrder(orderId, gameLabel, event_id);
       }
 
-      // Reset to FLAT with cooldown
+      // Check if we accidentally own contracts despite the error
+      try {
+        const ownedContracts = await this.getOwnedContracts(ticker);
+        if (ownedContracts > 0) {
+          this.onLog("INFO", `${gameLabel}: Order errored but we own ${ownedContracts} contract(s) — recording fill`, event_id);
+          this.writeLog("INFO", `Order errored but position exists: ${ownedContracts} contract(s)`, event_id);
+          await this.handleEntryFill(event_id, sideLabel, ticker, intent_price, ownedContracts, gameLabel);
+          return;
+        }
+      } catch {
+        // Can't check — fall through to reset
+      }
+
       await this.resetToFlatWithCooldown(event_id);
     }
   }
@@ -298,13 +339,17 @@ export class AutopilotPositionManager {
   }
 
   /**
-   * Safely cancel a resting order. Never throws — logs errors instead.
+   * Safely cancel a resting order, then re-check fill count.
+   *
+   * CRITICAL: An order can fill in the tiny window between getOrder()
+   * and cancelOrder(). After cancelling, we MUST re-check the order
+   * to see if any fills snuck in. Returns the final fill count.
    */
   private async safeCancelOrder(
     orderId: string,
     gameLabel: string,
     eventId: string
-  ): Promise<void> {
+  ): Promise<number> {
     try {
       await cancelOrder(orderId);
       this.onLog("INFO", `${gameLabel}: Cancelled resting order ${orderId}`, eventId);
@@ -318,6 +363,39 @@ export class AutopilotPositionManager {
         this.writeLog("INFO", `Failed to cancel resting order: ${errMsg}`, eventId, { orderId });
       }
     }
+
+    // Re-check order after cancel to catch race-condition fills
+    try {
+      const finalStatus = await getOrder(orderId);
+      const finalFills = finalStatus.fillCount ?? 0;
+      if (finalFills > 0) {
+        this.onLog(
+          "INFO",
+          `${gameLabel}: Post-cancel check — order ${orderId} actually has ${finalFills} fill(s)! (status: ${finalStatus.status})`,
+          eventId
+        );
+        this.writeLog(
+          "INFO",
+          `Post-cancel re-check: order ${orderId} has ${finalFills} fill(s) (status: ${finalStatus.status})`,
+          eventId,
+          { orderId, finalFills, status: finalStatus.status }
+        );
+      }
+      return finalFills;
+    } catch {
+      // If we can't re-check, return 0 — conservative fallback
+      return 0;
+    }
+  }
+
+  /**
+   * Check how many contracts we actually own on a specific ticker.
+   * This is the source of truth — Kalshi's portfolio endpoint.
+   */
+  private async getOwnedContracts(ticker: string): Promise<number> {
+    const positions = await fetchPositions();
+    const pos = positions.find((p) => p.ticker === ticker);
+    return pos && pos.position > 0 ? pos.position : 0;
   }
 
   /**
@@ -395,48 +473,27 @@ export class AutopilotPositionManager {
       );
 
       orderId = result.orderId;
-      const immediateFills = result.fillCount ?? 0;
+      this.onLog("INFO", `${gameLabel}: Exit order placed (${orderId})`, event_id);
+      this.writeLog("INFO", `Exit order placed (${orderId}) @ ${(exitPrice * 100).toFixed(0)}c`, event_id, { orderId, exitPrice });
 
-      this.writeLog(
-        "INFO",
-        `Exit order placed (${orderId}): immediate fills ${immediateFills}/${quantity}`,
-        event_id,
-        { orderId, immediateFills, exitPrice }
-      );
-
-      if (immediateFills >= quantity) {
-        // Fully filled immediately
-        await this.handleExitFill(event_id, ticker, exitPrice, immediateFills, entry_price, gameLabel);
-        return;
-      }
-
-      // Wait 3s and re-check
-      this.onLog("INFO", `${gameLabel}: Waiting 3s to verify exit order...`, event_id);
+      // Wait 3s for fill
+      this.onLog("INFO", `${gameLabel}: Waiting 3s for exit fill...`, event_id);
       await new Promise((r) => setTimeout(r, 3000));
 
-      let finalFills = immediateFills;
-      try {
-        const orderStatus = await getOrder(orderId);
-        finalFills = orderStatus.fillCount ?? 0;
-        this.writeLog(
-          "INFO",
-          `Exit order re-check (${orderId}): status=${orderStatus.status}, fills=${finalFills}/${quantity}`,
-          event_id,
-          { orderId, finalFills, status: orderStatus.status }
-        );
-      } catch (e) {
-        const errMsg = e instanceof Error ? e.message : String(e);
-        this.onLog("INFO", `${gameLabel}: Could not re-check exit order: ${errMsg}`, event_id);
-      }
+      // Cancel any resting remainder
+      await this.safeCancelOrder(orderId, gameLabel, event_id);
 
-      if (finalFills > 0) {
-        if (finalFills < quantity) {
-          await this.safeCancelOrder(orderId, gameLabel, event_id);
-        }
-        await this.handleExitFill(event_id, ticker, exitPrice, finalFills, entry_price, gameLabel);
+      // Source of truth: check what we still own
+      const remaining = await this.getOwnedContracts(ticker);
+      const sold = quantity - remaining;
+
+      this.onLog("INFO", `${gameLabel}: Post-exit check — still own ${remaining}, sold ${sold}`, event_id);
+      this.writeLog("INFO", `Post-exit position check: own ${remaining}, sold ${sold}`, event_id, { orderId, remaining, sold });
+
+      if (sold > 0) {
+        await this.handleExitFill(event_id, ticker, exitPrice, sold, entry_price, gameLabel);
       } else {
-        // No fills — cancel and restore to LONG
-        await this.safeCancelOrder(orderId, gameLabel, event_id);
+        // Nothing sold — restore to LONG, backend will retry
         await this.updatePosition(event_id, {
           state: longState,
           intent_price: null,
@@ -444,8 +501,8 @@ export class AutopilotPositionManager {
           intent_side: null,
           intent_created_at: null,
         });
-        this.onLog("INFO", `${gameLabel}: Auto exit no fills after 3s — will retry`, event_id);
-        this.writeLog("INFO", "Auto exit no fills after 3s — order cancelled, will retry", event_id, { orderId });
+        this.onLog("INFO", `${gameLabel}: Auto exit no fills — will retry`, event_id);
+        this.writeLog("INFO", "Auto exit no fills — will retry", event_id, { orderId });
       }
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
@@ -583,47 +640,27 @@ export class AutopilotPositionManager {
       );
 
       orderId = result.orderId;
-      const immediateFills = result.fillCount ?? 0;
+      this.writeLog("INFO", `${reason} exit order placed (${orderId}) @ ${(exitPrice * 100).toFixed(0)}c`, event_id, { orderId, exitPrice, reason });
 
-      this.writeLog(
-        "INFO",
-        `${reason} exit order placed (${orderId}): immediate fills ${immediateFills}/${quantity}`,
-        event_id,
-        { orderId, immediateFills, exitPrice, reason }
-      );
-
-      if (immediateFills >= quantity) {
-        await this.handleExitFill(event_id, ticker, exitPrice, immediateFills, entry_price, gameLabel);
-        return;
-      }
-
-      // Wait 3s and re-check
+      // Wait 3s for fill
       await new Promise((r) => setTimeout(r, 3000));
 
-      let finalFills = immediateFills;
-      try {
-        const orderStatus = await getOrder(orderId);
-        finalFills = orderStatus.fillCount ?? 0;
-        this.writeLog(
-          "INFO",
-          `${reason} exit re-check (${orderId}): status=${orderStatus.status}, fills=${finalFills}/${quantity}`,
-          event_id
-        );
-      } catch {
-        // Use immediate fills as fallback
-      }
+      // Cancel any resting remainder
+      await this.safeCancelOrder(orderId, gameLabel, event_id);
 
-      if (finalFills > 0) {
-        if (finalFills < quantity) {
-          await this.safeCancelOrder(orderId, gameLabel, event_id);
-        }
-        await this.handleExitFill(event_id, ticker, exitPrice, finalFills, entry_price, gameLabel);
+      // Source of truth: check what we still own
+      const remaining = await this.getOwnedContracts(ticker);
+      const sold = quantity - remaining;
+
+      this.writeLog("INFO", `${reason} exit check: own ${remaining}, sold ${sold}`, event_id, { orderId, remaining, sold });
+
+      if (sold > 0) {
+        await this.handleExitFill(event_id, ticker, exitPrice, sold, entry_price, gameLabel);
       } else {
-        // No fills — cancel and restore
-        await this.safeCancelOrder(orderId, gameLabel, event_id);
+        // Nothing sold — restore to LONG
         await this.updatePosition(event_id, { state: longState });
-        this.onLog("INFO", `${gameLabel}: ${reason} exit no fills after 3s — will retry`, event_id);
-        this.writeLog("INFO", `${reason} exit no fills after 3s — order cancelled`, event_id, { orderId });
+        this.onLog("INFO", `${gameLabel}: ${reason} exit no fills — will retry`, event_id);
+        this.writeLog("INFO", `${reason} exit no fills — will retry`, event_id, { orderId });
       }
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
