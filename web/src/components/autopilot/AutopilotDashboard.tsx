@@ -3,6 +3,7 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
 import { hasKalshiKeys } from "@/lib/kalshi-crypto";
+import { fetchPositions } from "@/lib/kalshi-api";
 import { AutopilotPositionManager } from "@/lib/autopilot-position-manager";
 import AutopilotGameCard from "./AutopilotGameCard";
 import type {
@@ -694,6 +695,23 @@ export default function AutopilotDashboard({ userId }: Props) {
     }
   };
 
+  const testKalshiPositions = async () => {
+    try {
+      const positions = await fetchPositions();
+      const active = positions.filter((p) => p.position > 0);
+      const summary = active.length > 0
+        ? active.map((p) => `${p.ticker} x${p.position}`).join("\n")
+        : "NO ACTIVE POSITIONS FOUND";
+      alert(`Kalshi returned ${positions.length} total positions, ${active.length} with contracts:\n\n${summary}`);
+      console.log("[TEST] Raw Kalshi positions:", positions);
+      console.log("[TEST] Active positions:", active);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      alert(`fetchPositions() FAILED: ${msg}`);
+      console.error("[TEST] fetchPositions error:", e);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-black text-white p-4 md:p-6 font-mono">
       {/* Header */}
@@ -735,6 +753,14 @@ export default function AutopilotDashboard({ userId }: Props) {
               }`}
             >
               Log{activityLog.length > 0 ? ` (${activityLog.length})` : ""}
+            </button>
+
+            {/* Test positions endpoint */}
+            <button
+              onClick={testKalshiPositions}
+              className="text-xs text-yellow-500 hover:text-yellow-300 border border-yellow-800 rounded px-2 py-1"
+            >
+              Test Positions
             </button>
 
             {/* Settings toggle */}

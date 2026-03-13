@@ -17,7 +17,7 @@ import {
   placeOrder,
   sellOrder,
   fetchNbaMarkets,
-  fetchPositionsForEvent,
+  fetchPositions,
   cancelOrder,
 } from "@/lib/kalshi-api";
 import type { AutopilotPosition } from "@/lib/types";
@@ -174,9 +174,34 @@ export class AutopilotPositionManager {
       return;
     }
 
-    // Gate 2: Kalshi — do we actually own contracts on this game?
+    // Gate 2: Kalshi — fetch ALL positions and check for this game.
+    // We call fetchPositions() twice (with 500ms gap) to guard against flaky API responses.
     try {
-      const existing = await this.checkKalshiPositionsForEvent(eventPrefix);
+      let existing: { ticker: string; position: number } | null = null;
+
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const allPositions = await fetchPositions();
+        const activeNba = allPositions.filter((p) => p.position > 0 && p.ticker.startsWith("KX"));
+
+        // Log what the API actually returned so we can diagnose issues
+        const positionSummary = activeNba.map((p) => `${p.ticker} x${p.position}`).join(", ") || "NONE";
+        this.onLog("INFO", `${gameLabel}: Kalshi positions (attempt ${attempt + 1}): [${positionSummary}]`, event_id);
+        if (attempt === 0) {
+          this.writeLog("INFO", `Pre-flight Kalshi positions: [${positionSummary}]`, event_id, {
+            positionCount: activeNba.length,
+            positions: activeNba.map((p) => ({ ticker: p.ticker, qty: p.position })),
+          });
+        }
+
+        const match = activeNba.find((p) => p.ticker.startsWith(eventPrefix));
+        if (match) {
+          existing = { ticker: match.ticker, position: match.position };
+          break;
+        }
+
+        if (attempt === 0) await new Promise((r) => setTimeout(r, 500));
+      }
+
       if (existing) {
         this.onLog("INFO", `${gameLabel}: BLOCKED — already own ${existing.position} contract(s) on ${existing.ticker}`, event_id);
         this.writeLog("BLOCKED", `Already hold ${existing.position} contract(s) on ${existing.ticker}`, event_id, {
@@ -234,7 +259,7 @@ export class AutopilotPositionManager {
       await this.tryCancelOrder(orderId, gameLabel, event_id);
 
       // Check what we actually own
-      const owned = await this.getOwnedContracts(eventPrefix, ticker);
+      const owned = await this.getOwnedContracts(ticker);
       this.onLog("INFO", `${gameLabel}: Own ${owned} contract(s) on ${ticker}`, event_id);
       this.writeLog("INFO", `Post-order: ${owned} contract(s) on ${ticker}`, event_id, { orderId, owned });
 
@@ -254,7 +279,7 @@ export class AutopilotPositionManager {
 
       // Check if we own anything despite the error
       try {
-        const owned = await this.getOwnedContracts(eventPrefix, ticker);
+        const owned = await this.getOwnedContracts(ticker);
         if (owned > 0) {
           this.onLog("INFO", `${gameLabel}: Error but own ${owned} contract(s) — recording`, event_id);
           await this.handleEntryFill(event_id, sideLabel, ticker, intentPrice, owned, gameLabel);
@@ -298,7 +323,6 @@ export class AutopilotPositionManager {
 
     await this.updatePosition(event_id, { state: "EXITING" });
 
-    const eventPrefix = ticker.substring(0, ticker.lastIndexOf("-"));
     let orderId: string | null = null;
     try {
       const result = await sellOrder(ticker, "yes", quantity, exitPrice.toFixed(2));
@@ -309,7 +333,7 @@ export class AutopilotPositionManager {
       await new Promise((r) => setTimeout(r, ORDER_WAIT_MS));
       await this.tryCancelOrder(orderId, gameLabel, event_id);
 
-      const remaining = await this.getOwnedContracts(eventPrefix, ticker);
+      const remaining = await this.getOwnedContracts(ticker);
       const sold = quantity - remaining;
 
       this.onLog("INFO", `${gameLabel}: Sold ${sold}, still own ${remaining}`, event_id);
@@ -351,7 +375,6 @@ export class AutopilotPositionManager {
     this.onLog("EXIT", `${gameLabel}: ${reason} EXIT at ${(exitPrice * 100).toFixed(0)}c`, event_id);
     this.writeLog("EXIT", `${reason} EXIT: selling ${ticker} x${quantity} @ ${(exitPrice * 100).toFixed(0)}c`, event_id);
 
-    const eventPrefix = ticker.substring(0, ticker.lastIndexOf("-"));
     let orderId: string | null = null;
     try {
       const result = await sellOrder(ticker, "yes", quantity, exitPrice.toFixed(2));
@@ -361,7 +384,7 @@ export class AutopilotPositionManager {
       await new Promise((r) => setTimeout(r, ORDER_WAIT_MS));
       await this.tryCancelOrder(orderId, gameLabel, event_id);
 
-      const remaining = await this.getOwnedContracts(eventPrefix, ticker);
+      const remaining = await this.getOwnedContracts(ticker);
       const sold = quantity - remaining;
 
       if (sold > 0) {
@@ -382,28 +405,13 @@ export class AutopilotPositionManager {
   // ── Helpers ─────────────────────────────────────────────────────────
 
   /**
-   * Check Kalshi for owned contracts on this game event.
-   * Calls the event-specific endpoint twice (with 500ms gap) to handle flakiness.
-   */
-  private async checkKalshiPositionsForEvent(
-    eventPrefix: string
-  ): Promise<{ ticker: string; position: number } | null> {
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const positions = await fetchPositionsForEvent(eventPrefix);
-      const active = positions.find((p) => p.position > 0);
-      if (active) return { ticker: active.ticker, position: active.position };
-      if (attempt === 0) await new Promise((r) => setTimeout(r, 500));
-    }
-    return null;
-  }
-
-  /**
    * Check how many contracts we own on a specific ticker.
+   * Fetches ALL positions and scans locally — no server-side event_ticker filter.
    */
-  private async getOwnedContracts(eventPrefix: string, ticker: string): Promise<number> {
-    const positions = await fetchPositionsForEvent(eventPrefix);
-    const pos = positions.find((p) => p.ticker === ticker);
-    return pos && pos.position > 0 ? pos.position : 0;
+  private async getOwnedContracts(ticker: string): Promise<number> {
+    const positions = await fetchPositions();
+    const pos = positions.find((p) => p.ticker === ticker && p.position > 0);
+    return pos ? pos.position : 0;
   }
 
   /**

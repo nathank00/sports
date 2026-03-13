@@ -130,30 +130,13 @@ function mapPositions(raw: KalshiMarketPosition[]): PositionItem[] {
 
 /**
  * Fetch the user's open (unsettled) positions.
- * Uses settlement_status=unsettled and count_filter=position to only
- * return markets where we currently hold contracts — not historical trades.
+ * Returns ALL unsettled positions — filtering happens client-side.
  */
 export async function fetchPositions(): Promise<PositionItem[]> {
   const data = (await kalshiRequest(
     "GET",
     "/trade-api/v2/portfolio/positions",
-    "limit=200&settlement_status=unsettled&count_filter=position"
-  )) as { market_positions?: KalshiMarketPosition[] };
-
-  if (!data.market_positions) return [];
-  return mapPositions(data.market_positions);
-}
-
-/**
- * Fetch positions for a specific event (game).
- * Uses event_ticker filter so we only get markets for that one game.
- * This is far more reliable than fetching all 200 positions and scanning.
- */
-export async function fetchPositionsForEvent(eventTicker: string): Promise<PositionItem[]> {
-  const data = (await kalshiRequest(
-    "GET",
-    "/trade-api/v2/portfolio/positions",
-    `event_ticker=${encodeURIComponent(eventTicker)}&settlement_status=unsettled&count_filter=position`
+    "limit=200&settlement_status=unsettled"
   )) as { market_positions?: KalshiMarketPosition[] };
 
   if (!data.market_positions) return [];
