@@ -3,7 +3,7 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
 import { hasKalshiKeys } from "@/lib/kalshi-crypto";
-import { fetchPositions } from "@/lib/kalshi-api";
+import { fetchPositions, debugFetchPositionsRaw } from "@/lib/kalshi-api";
 import { AutopilotPositionManager } from "@/lib/autopilot-position-manager";
 import AutopilotGameCard from "./AutopilotGameCard";
 import type {
@@ -697,18 +697,14 @@ export default function AutopilotDashboard({ userId }: Props) {
 
   const testKalshiPositions = async () => {
     try {
-      const positions = await fetchPositions();
-      const active = positions.filter((p) => p.position > 0);
-      const summary = active.length > 0
-        ? active.map((p) => `${p.ticker} x${p.position}`).join("\n")
-        : "NO ACTIVE POSITIONS FOUND";
-      alert(`Kalshi returned ${positions.length} total positions, ${active.length} with contracts:\n\n${summary}`);
-      console.log("[TEST] Raw Kalshi positions:", positions);
-      console.log("[TEST] Active positions:", active);
+      const raw = await debugFetchPositionsRaw();
+      console.log("[TEST] Raw Kalshi API response:", raw);
+      // Show first 2000 chars in alert so we can see the actual response
+      alert(raw.length > 2000 ? raw.substring(0, 2000) + "\n\n... (truncated)" : raw);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      alert(`fetchPositions() FAILED: ${msg}`);
-      console.error("[TEST] fetchPositions error:", e);
+      alert(`DEBUG FAILED: ${msg}`);
+      console.error("[TEST] debug error:", e);
     }
   };
 

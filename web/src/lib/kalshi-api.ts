@@ -53,6 +53,38 @@ async function kalshiRequest(
   return resp.json();
 }
 
+// ── Debug ─────────────────────────────────────────────────────────────
+
+/**
+ * Hit the Kalshi positions endpoint and return the RAW JSON response.
+ * No mapping, no filtering — just the raw API response as a string.
+ */
+export async function debugFetchPositionsRaw(): Promise<string> {
+  const cryptoKey = await loadCryptoKey();
+  const keyId = loadKeyId();
+  if (!cryptoKey || !keyId) return "ERROR: Kalshi API keys not configured";
+
+  const timestamp = Date.now().toString();
+  const path = "/trade-api/v2/portfolio/positions";
+  const signature = await signKalshiRequest(cryptoKey, timestamp, "GET", path);
+
+  const resp = await fetch("/api/kalshi/proxy", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      method: "GET",
+      path,
+      query: "limit=200&count_filter=position,total_traded",
+      kalshiKeyId: keyId,
+      timestamp,
+      signature,
+    }),
+  });
+
+  const text = await resp.text();
+  return `Status: ${resp.status}\n\n${text}`;
+}
+
 // ── Public API functions ───────────────────────────────────────────────
 
 /**
