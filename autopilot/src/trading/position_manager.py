@@ -289,7 +289,13 @@ class PositionManager:
 
         # 7. Check edge >= user's threshold
         if edge < user_settings.edge_threshold:
-            # Don't log this — it's the normal case and would be noisy
+            # Only log when signal was a BUY (edge passed the 2% floor but
+            # not the user's personal threshold) — helps diagnose gaps
+            if signal.recommended_action in ("BUY_HOME", "BUY_AWAY"):
+                logger.info(
+                    f"  Edge {edge:.1f}% < user threshold {user_settings.edge_threshold}% "
+                    f"for {user_id[:8]}... — skipping"
+                )
             return
 
         # 8. Check edge persistence
@@ -308,6 +314,10 @@ class PositionManager:
         # 9. All pass → compute contract count and create PENDING_ENTRY
         intent_price = self._get_intent_price(signal)
         if not intent_price or intent_price <= 0 or intent_price >= 1:
+            logger.warning(
+                f"  Invalid intent price {intent_price} for {signal.recommended_ticker} "
+                f"— skipping entry"
+            )
             return
 
         contracts = self._compute_contracts(user_settings, intent_price)

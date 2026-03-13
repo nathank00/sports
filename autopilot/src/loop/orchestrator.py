@@ -278,6 +278,16 @@ class Orchestrator:
                 if len(parts) == 2:
                     event_id = parts[0]
 
+            if not active_users:
+                logger.warning(
+                    f"  {signal.recommended_action} signal but no active users found"
+                )
+            elif not event_id:
+                logger.warning(
+                    f"  {signal.recommended_action} signal but could not parse "
+                    f"event_id from ticker: {signal.recommended_ticker}"
+                )
+
             if event_id and active_users:
                 game_id = tracker.espn_game_id or tracker.nba_game_id
                 for user_row in active_users:
@@ -298,8 +308,20 @@ class Orchestrator:
                     except Exception as e:
                         logger.error(
                             f"Position manager error for user "
-                            f"{user_row.get('user_id', '?')[:8]}...: {e}"
+                            f"{user_row.get('user_id', '?')[:8]}...: {e}",
+                            exc_info=True,
                         )
+                        # Also write to DB so it's visible in the UI
+                        from autopilot.src.db import write_log
+                        try:
+                            write_log(
+                                user_id=user_row.get("user_id", "unknown"),
+                                level="ERROR",
+                                message=f"Position manager exception: {e}",
+                                event_id=event_id,
+                            )
+                        except Exception:
+                            pass
 
         # Monitor existing positions for auto-exit (TP/SL/late-game)
         if tracker.kalshi_markets:

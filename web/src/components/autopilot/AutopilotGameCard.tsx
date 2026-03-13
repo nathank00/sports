@@ -387,31 +387,89 @@ function LiveCard({
         </div>
       </div>
 
-      {/* Edge + action */}
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-2">
-          <span
-            className={`text-xs font-medium px-2 py-0.5 rounded ${
-              displayedAction !== "NO_TRADE"
-                ? "bg-green-900/40 text-green-400 border border-green-800"
-                : "bg-neutral-800 text-neutral-500 border border-neutral-700"
-            }`}
-          >
-            {displayedAction}
-          </span>
-          {s.edge_vs_kalshi != null && (
-            <span className="text-xs text-neutral-400">
-              Edge: {s.edge_vs_kalshi > 0 ? "+" : ""}
-              {s.edge_vs_kalshi.toFixed(1)}%
+      {/* Edge summary: best-edge side → team, model %, kalshi ask, net edge */}
+      {(() => {
+        // Determine which side to display
+        let edgeTeam: string;
+        let edgeModelProb: number;
+        let edgeKalshiAsk: number | null;
+
+        if (s.recommended_action === "BUY_HOME") {
+          edgeTeam = s.home_team;
+          edgeModelProb = homeProb;
+          edgeKalshiAsk = kalshiHomePrice;
+        } else if (s.recommended_action === "BUY_AWAY") {
+          edgeTeam = s.away_team;
+          edgeModelProb = awayProb;
+          edgeKalshiAsk = kalshiAwayPrice;
+        } else {
+          // NO_TRADE — pick the side with better edge
+          const homeEdge =
+            kalshiHomePrice != null
+              ? (homeProb - kalshiHomePrice) * 100 - 2
+              : -Infinity;
+          const awayEdge =
+            kalshiAwayPrice != null
+              ? (awayProb - kalshiAwayPrice) * 100 - 2
+              : -Infinity;
+
+          if (homeEdge >= awayEdge) {
+            edgeTeam = s.home_team;
+            edgeModelProb = homeProb;
+            edgeKalshiAsk = kalshiHomePrice;
+          } else {
+            edgeTeam = s.away_team;
+            edgeModelProb = awayProb;
+            edgeKalshiAsk = kalshiAwayPrice;
+          }
+        }
+
+        const netEdge =
+          edgeKalshiAsk != null
+            ? (edgeModelProb - edgeKalshiAsk) * 100 - 2
+            : null;
+
+        const isBuy = displayedAction !== "NO_TRADE";
+
+        return (
+          <div className="flex items-center justify-between mb-2">
+            <span
+              className={`text-xs font-medium px-2 py-0.5 rounded ${
+                isBuy
+                  ? "bg-green-900/40 text-green-400 border border-green-800"
+                  : "bg-neutral-800 text-neutral-500 border border-neutral-700"
+              }`}
+            >
+              {displayedAction}
             </span>
-          )}
-        </div>
-        {s.reason && (
-          <span className="text-xs text-neutral-600 truncate max-w-[200px]">
-            {s.reason}
-          </span>
-        )}
-      </div>
+            <div className="flex items-center gap-3 text-xs font-mono">
+              <span className="text-neutral-300 font-medium">{edgeTeam}</span>
+              <span className="text-neutral-500">
+                {Math.round(edgeModelProb * 100)}%
+              </span>
+              <span className="text-neutral-600">
+                {edgeKalshiAsk != null
+                  ? `${(edgeKalshiAsk * 100).toFixed(0)}¢`
+                  : "—"}
+              </span>
+              {netEdge != null && (
+                <span
+                  className={`font-medium ${
+                    netEdge >= edgeThreshold
+                      ? "text-green-400"
+                      : netEdge > 0
+                        ? "text-yellow-400"
+                        : "text-neutral-500"
+                  }`}
+                >
+                  {netEdge > 0 ? "+" : ""}
+                  {netEdge.toFixed(1)}%
+                </span>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Kalshi market prices bar */}
       {(kalshiHomePrice != null || kalshiAwayPrice != null) && (
