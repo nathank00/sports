@@ -170,8 +170,13 @@ export class AutopilotPositionManager {
       const positions = await fetchPositions();
       const pos = positions.find((p) => p.ticker === ticker && p.position > 0);
       if (pos) {
-        this.onLog("TRADE", `${gameLabel}: BUY CONFIRMED — ${pos.position} contract(s)`, undefined);
-        this.writeLog("TRADE", `${gameLabel}: BUY CONFIRMED — ${pos.position} contract(s)`, undefined);
+        // Update entry_price from Kalshi (exposure/position is the true average cost)
+        const kalshiEntryPrice = pos.position > 0 ? pos.exposure / pos.position : 0;
+        if (kalshiEntryPrice > 0) {
+          await this.updateEntryPrice(eventPrefix, kalshiEntryPrice);
+        }
+        this.onLog("TRADE", `${gameLabel}: BUY CONFIRMED — ${pos.position} contract(s) @ ${(kalshiEntryPrice * 100).toFixed(0)}c`, undefined);
+        this.writeLog("TRADE", `${gameLabel}: BUY CONFIRMED — ${pos.position} contract(s) @ ${(kalshiEntryPrice * 100).toFixed(0)}c`, undefined);
       } else {
         this.onLog("INFO", `${gameLabel}: BUY NOT FILLED — will retry on next signal`, undefined);
         this.writeLog("INFO", `${gameLabel}: BUY NOT FILLED`, undefined);
@@ -229,8 +234,9 @@ export class AutopilotPositionManager {
     const lastSell = this.recentSellFired.get(event_id);
     if (lastSell && Date.now() - lastSell < 45_000) return;
 
-    // Get current quantity from Kalshi
+    // Get current quantity + entry price from Kalshi
     let quantity: number;
+    let kalshiEntryPrice: number;
     try {
       const positions = await fetchPositions();
       const pos = positions.find((p) => p.ticker === ticker && p.position > 0);
@@ -240,6 +246,8 @@ export class AutopilotPositionManager {
         return;
       }
       quantity = pos.position;
+      // Derive entry price from Kalshi (exposure / position)
+      kalshiEntryPrice = pos.exposure / pos.position;
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
       this.onLog("INFO", `${gameLabel}: Cannot check Kalshi positions: ${errMsg}`, undefined);
@@ -274,7 +282,8 @@ export class AutopilotPositionManager {
     }
 
     try {
-      const pnlPerContract = bidPrice - entry_price;
+      // Use Kalshi-derived entry price for P&L (source of truth)
+      const pnlPerContract = bidPrice - kalshiEntryPrice;
       const totalPnl = pnlPerContract * quantity;
       const pnlStr = `${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(2)}`;
 
@@ -352,6 +361,18 @@ export class AutopilotPositionManager {
         );
     } catch (e) {
       console.error("upsertPosition error:", e);
+    }
+  }
+
+  private async updateEntryPrice(eventId: string, entryPrice: number): Promise<void> {
+    try {
+      await supabase
+        .from("autopilot_positions")
+        .update({ entry_price: entryPrice })
+        .eq("user_id", this.userId)
+        .eq("event_id", eventId);
+    } catch (e) {
+      console.error("updateEntryPrice error:", e);
     }
   }
 

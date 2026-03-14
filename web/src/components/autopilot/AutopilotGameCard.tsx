@@ -51,32 +51,59 @@ function formatStartTime(iso: string): string {
 // ── Position display section ─────────────────────────────────────────
 
 function PositionSection({
-  dbPosition,
   kalshiPosition,
+  homeTeam,
+  awayTeam,
   currentHomePrice,
   currentAwayPrice,
+  dbPosition,
   onManualExit,
 }: {
-  dbPosition: AutopilotPosition;
   kalshiPosition: PositionItem;
+  homeTeam: string;
+  awayTeam: string;
   currentHomePrice?: number | null;
   currentAwayPrice?: number | null;
+  dbPosition?: AutopilotPosition | null;
   onManualExit: (position: AutopilotPosition) => void;
 }) {
   const quantity = kalshiPosition.position;
-  const entryPrice = dbPosition.entry_price;
-  const side = dbPosition.side;
+
+  // Derive team from Kalshi ticker (e.g., "KXNBAGAME-26MAR13MINGSW-GSW" → "GSW")
+  const tickerTeam = kalshiPosition.ticker.substring(kalshiPosition.ticker.lastIndexOf("-") + 1);
+  const isHome = tickerTeam === homeTeam;
+  const teamAbbr = tickerTeam;
+
+  // Derive entry price from Kalshi (exposure / position)
+  const entryPrice = quantity > 0 ? kalshiPosition.exposure / quantity : 0;
 
   // Current market price for this side
-  const currentPrice = side === "HOME" ? currentHomePrice : currentAwayPrice;
+  const currentPrice = isHome ? currentHomePrice : currentAwayPrice;
 
   // Unrealized P&L
   const unrealizedPnl =
-    entryPrice != null && currentPrice != null
+    entryPrice > 0 && currentPrice != null
       ? (currentPrice - entryPrice) * quantity
       : null;
 
-  const teamAbbr = side === "HOME" ? dbPosition.home_team : dbPosition.away_team;
+  const handleExit = () => {
+    if (dbPosition) {
+      onManualExit(dbPosition);
+    } else {
+      // Construct position from Kalshi data for manual exit
+      const eventPrefix = kalshiPosition.ticker.substring(0, kalshiPosition.ticker.lastIndexOf("-"));
+      onManualExit({
+        user_id: "",
+        event_id: eventPrefix,
+        ticker: kalshiPosition.ticker,
+        side: isHome ? "HOME" : "AWAY",
+        entry_price: entryPrice,
+        home_team: homeTeam,
+        away_team: awayTeam,
+        sell_signal: null,
+      });
+    }
+  };
 
   return (
     <div className="text-xs mb-2 py-2 px-2 rounded bg-neutral-800/50 border border-neutral-800">
@@ -88,7 +115,7 @@ function PositionSection({
           </span>
         </div>
         <button
-          onClick={() => onManualExit(dbPosition)}
+          onClick={handleExit}
           className="text-xs font-medium px-2 py-0.5 rounded bg-red-900/40 text-red-400 border border-red-800 hover:bg-red-900/60 transition-colors"
         >
           EXIT
@@ -186,13 +213,15 @@ function PregameCard({
         </div>
       )}
 
-      {/* Position section — only if Kalshi says we own contracts */}
-      {dbPosition && kalshiPosition && (
+      {/* Position section — shown if Kalshi says we own contracts */}
+      {kalshiPosition && kalshiPosition.position > 0 && (
         <PositionSection
-          dbPosition={dbPosition}
           kalshiPosition={kalshiPosition}
+          homeTeam={game.homeTeam}
+          awayTeam={game.awayTeam}
           currentHomePrice={homePrice}
           currentAwayPrice={awayPrice}
+          dbPosition={dbPosition}
           onManualExit={onManualExit}
         />
       )}
@@ -402,13 +431,15 @@ function LiveCard({
         </div>
       )}
 
-      {/* Position section — from Kalshi + DB */}
-      {dbPosition && kalshiPosition && (
+      {/* Position section — derived from Kalshi */}
+      {kalshiPosition && kalshiPosition.position > 0 && (
         <PositionSection
-          dbPosition={dbPosition}
           kalshiPosition={kalshiPosition}
+          homeTeam={game.homeTeam}
+          awayTeam={game.awayTeam}
           currentHomePrice={kalshiHomePrice}
           currentAwayPrice={kalshiAwayPrice}
+          dbPosition={dbPosition}
           onManualExit={onManualExit}
         />
       )}
@@ -512,12 +543,14 @@ function FinishedCard({
       </div>
 
       {/* Position section — show if we still own contracts (Kalshi truth) */}
-      {dbPosition && kalshiPosition && (
+      {kalshiPosition && kalshiPosition.position > 0 && (
         <PositionSection
-          dbPosition={dbPosition}
           kalshiPosition={kalshiPosition}
+          homeTeam={game.homeTeam}
+          awayTeam={game.awayTeam}
           currentHomePrice={game.kalshiHomePrice ?? s.kalshi_home_price}
           currentAwayPrice={game.kalshiAwayPrice ?? s.kalshi_away_price}
+          dbPosition={dbPosition}
           onManualExit={onManualExit}
         />
       )}

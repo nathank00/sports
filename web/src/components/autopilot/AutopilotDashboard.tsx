@@ -294,11 +294,9 @@ export default function AutopilotDashboard({ userId }: Props) {
         if (data) {
           const dbLogs = data as AutopilotLog[];
           setActivityLog((prev) => {
-            // Keep very recent in-memory-only logs that may not have reached the DB yet
-            const recentInMemory = prev.filter((p) => {
-              if (p.id >= 0) return false;
-              if (Date.now() - new Date(p.timestamp).getTime() >= 10_000)
-                return false;
+            // Keep in-memory logs (negative ID) that don't have a matching DB log yet
+            const inMemory = prev.filter((p) => {
+              if (p.id >= 0) return false; // DB log from previous poll — replaced by fresh fetch
               const pTime = new Date(p.timestamp).getTime();
               const hasDupe = dbLogs.some(
                 (db) =>
@@ -308,8 +306,8 @@ export default function AutopilotDashboard({ userId }: Props) {
               );
               return !hasDupe;
             });
-            if (recentInMemory.length === 0) return dbLogs;
-            const merged = [...recentInMemory, ...dbLogs];
+            if (inMemory.length === 0) return dbLogs;
+            const merged = [...inMemory, ...dbLogs];
             merged.sort(
               (a, b) =>
                 new Date(b.timestamp).getTime() -
