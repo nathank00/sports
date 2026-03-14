@@ -1,28 +1,28 @@
-"""Position Manager — per-user position state management.
+"""Position Manager — simplified.
 
-Evaluates trade intents for each active user on every signal cycle.
-Enforces one-directional-position-per-game, anti-hedging, entry guards,
-edge persistence, and cooldown logic. Writes PENDING_ENTRY state to
-Supabase for the frontend to execute.
+Backend's role:
+1. Generate signals → write to autopilot_signals (unchanged, done by orchestrator)
+2. Monitor open positions for TP/SL/late-game → set sell_signal on position row
+3. Expire stale sell_signals
 
-Also monitors open positions for take-profit, stop-loss, and late-game
-auto-exit conditions, writing PENDING_EXIT intents.
+Frontend's role:
+- Read signals → fire buy orders → verify via Kalshi
+- Poll positions for sell_signal → fire sell orders → verify via Kalshi
 
-Does NOT execute trades — the frontend handles that with browser-stored
-Kalshi keys.
+No state machine. No PENDING_ENTRY/PENDING_EXIT. No edge persistence.
+Kalshi is the source of truth for what the user owns.
 """
 
 import logging
 import math
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from dataclasses import dataclass
 
 from autopilot.src.db import (
     fetch_active_users,
     fetch_position,
     upsert_position,
-    fetch_stale_pending_intents,
-    fetch_long_positions_for_event,
+    fetch_positions_with_entry_price,
     fetch_user_settings,
     write_log,
 )
@@ -34,9 +34,6 @@ from autopilot.src.trading.decision import (
 )
 
 logger = logging.getLogger(__name__)
-
-# Number of consecutive cycles edge must persist before entry
-EDGE_PERSISTENCE_REQUIRED = 2
 
 # No-trade window — must match decision.py TradingConfig default
 NO_TRADE_SECONDS = 240.0
@@ -72,20 +69,16 @@ class UserSettings:
 
 
 class PositionManager:
-    """Per-user position management.
+    """Simplified position management.
 
-    Called by the orchestrator for each active user on each signal.
-    Manages the lifecycle: FLAT -> PENDING_ENTRY (backend writes).
-    Frontend handles: PENDING_ENTRY -> LONG_* -> EXITING -> LOCKED.
+    process_signal() — no longer creates PENDING_ENTRY. The frontend reads
+    autopilot_signals directly and fires buys. Backend just logs.
 
-    Also monitors open positions for auto-exit via monitor_exits().
+    monitor_exits() — sets sell_signal on position rows when TP/SL/late-game
+    triggers. Frontend polls for sell_signal and fires sells.
     """
 
     def __init__(self):
-        # In-memory edge persistence tracking: {game_id: [recent_edge_values]}
-        # Per game (not per user) since the edge is the same for all users
-        self.edge_history: dict[str, list[float]] = {}
-
         # Cache active users per tick to avoid repeated DB queries
         self._cached_users: list[dict] | None = None
 
@@ -112,23 +105,17 @@ class PositionManager:
         home_score: int,
         away_score: int,
     ) -> None:
-        """Evaluate whether to create a PENDING_ENTRY for this user+game.
+        """Log qualifying signals. Frontend reads autopilot_signals and acts.
 
-        Steps:
-        1. Skip NO_TRADE signals
-        2. Fetch current position for (user_id, event_id)
-        3. Create FLAT row if none exists
-        4. State guard with anti-hedging (only enter when FLAT)
-        5. Check cooldown_until
-        6. Check entry guards (no-trade window, blowout)
-        7. Check edge >= user's threshold
-        8. Check edge persistence (2+ consecutive cycles)
-        9. All pass → set state = PENDING_ENTRY with intent fields
+        The backend no longer creates PENDING_ENTRY — the frontend reads
+        signals directly and fires orders when edge >= threshold.
+
+        We still log here for visibility into what the backend is seeing.
         """
         user_id = user_settings.user_id
         game_label = f"{away_team}@{home_team}"
 
-        # 1. Skip NO_TRADE signals entirely (no logging needed)
+        # Skip NO_TRADE signals
         if signal.recommended_action == "NO_TRADE":
             return
 
@@ -136,144 +123,11 @@ class PositionManager:
         if edge is None:
             return
 
-        # 2. Fetch current position
-        position = fetch_position(user_id, event_id)
-
-        # 3. Create FLAT row if none exists
-        if position is None:
-            upsert_position(user_id, event_id, {
-                "game_id": game_id,
-                "state": "FLAT",
-                "side": None,
-                "ticker": None,
-                "home_team": home_team,
-                "away_team": away_team,
-            })
-            position = {"state": "FLAT", "cooldown_until": None}
-
-        # 4. State guard with anti-hedging enforcement
-        state = position.get("state", "FLAT")
-
-        # Handle expired LOCKED positions → reset to FLAT
-        if state == "LOCKED":
-            cooldown_until_val = position.get("cooldown_until")
-            cooldown_expired = True
-            if cooldown_until_val:
-                try:
-                    cooldown_dt = datetime.fromisoformat(cooldown_until_val)
-                    cooldown_expired = datetime.now(timezone.utc) >= cooldown_dt
-                except (ValueError, TypeError):
-                    pass
-            if cooldown_expired:
-                upsert_position(user_id, event_id, {
-                    "game_id": game_id,
-                    "state": "FLAT",
-                    "side": None,
-                    "ticker": None,
-                    "home_team": home_team,
-                    "away_team": away_team,
-                    "entry_price": None,
-                    "quantity": None,
-                    "entry_timestamp": None,
-                    "exit_price": None,
-                    "exit_timestamp": None,
-                    "realized_pnl": None,
-                    "cooldown_until": None,
-                    "intent_price": None,
-                    "intent_contracts": None,
-                    "intent_side": None,
-                    "intent_created_at": None,
-                })
-                state = "FLAT"
-                position = {"state": "FLAT", "cooldown_until": None}
-                logger.info(f"  Reset LOCKED position to FLAT for user {user_id[:8]}... on {event_id}")
-
-        # Block if pending order exists
-        if state == "PENDING_ENTRY":
-            write_log(
-                user_id=user_id,
-                level="BLOCKED",
-                message=f"{game_label}: Pending entry order exists — signal ignored",
-                event_id=event_id,
-                metadata={"reason_code": "BLOCKED_PENDING_ORDER_EXISTS"},
-            )
+        # Check edge >= user's threshold (just for logging — frontend enforces too)
+        if edge < user_settings.edge_threshold:
             return
 
-        # Block if pending exit
-        if state == "PENDING_EXIT":
-            write_log(
-                user_id=user_id,
-                level="BLOCKED",
-                message=f"{game_label}: Pending exit order exists — signal ignored",
-                event_id=event_id,
-                metadata={"reason_code": "BLOCKED_EVENT_NOT_FLAT"},
-            )
-            return
-
-        # Block if exiting
-        if state == "EXITING":
-            write_log(
-                user_id=user_id,
-                level="BLOCKED",
-                message=f"{game_label}: Position is exiting — signal ignored",
-                event_id=event_id,
-                metadata={"reason_code": "BLOCKED_EVENT_NOT_FLAT"},
-            )
-            return
-
-        # Anti-hedging: if already holding a position, block new entries
-        if state in ("LONG_HOME", "LONG_AWAY"):
-            existing_side = "HOME" if state == "LONG_HOME" else "AWAY"
-            signal_side = "HOME" if signal.recommended_action == "BUY_HOME" else "AWAY"
-
-            if signal_side != existing_side:
-                write_log(
-                    user_id=user_id,
-                    level="BLOCKED",
-                    message=f"{game_label}: Anti-hedge: already {state}, cannot {signal.recommended_action}",
-                    event_id=event_id,
-                    metadata={"reason_code": "BLOCKED_OPPOSITE_SIDE_POSITION_EXISTS"},
-                )
-            else:
-                write_log(
-                    user_id=user_id,
-                    level="BLOCKED",
-                    message=f"{game_label}: Already {state} — cannot add to position",
-                    event_id=event_id,
-                    metadata={"reason_code": "BLOCKED_EVENT_NOT_FLAT"},
-                )
-            return
-
-        # Block any other non-FLAT state
-        if state != "FLAT":
-            write_log(
-                user_id=user_id,
-                level="BLOCKED",
-                message=f"{game_label}: Position state {state} — signal ignored",
-                event_id=event_id,
-                metadata={"reason_code": "BLOCKED_EVENT_NOT_FLAT"},
-            )
-            return
-
-        # 5. Check cooldown
-        cooldown_until = position.get("cooldown_until")
-        if cooldown_until:
-            try:
-                cooldown_dt = datetime.fromisoformat(cooldown_until)
-                if datetime.now(timezone.utc) < cooldown_dt:
-                    remaining = (cooldown_dt - datetime.now(timezone.utc)).seconds
-                    write_log(
-                        user_id=user_id,
-                        level="BLOCKED",
-                        message=f"{game_label}: Cooldown active ({remaining}s remaining)",
-                        event_id=event_id,
-                        metadata={"reason_code": "BLOCKED_COOLDOWN_ACTIVE"},
-                    )
-                    return
-            except (ValueError, TypeError):
-                pass
-
-        # 6. Check entry guards
+        # Check entry guards (no-trade window, blowout)
         guard_result = self._check_entry_guards(
             period, seconds_remaining, home_score, away_score
         )
@@ -288,79 +142,17 @@ class PositionManager:
             )
             return
 
-        # 7. Check edge >= user's threshold
-        if edge < user_settings.edge_threshold:
-            # Only log when signal was a BUY (edge passed the 2% floor but
-            # not the user's personal threshold) — helps diagnose gaps
-            if signal.recommended_action in ("BUY_HOME", "BUY_AWAY"):
-                logger.info(
-                    f"  Edge {edge:.1f}% < user threshold {user_settings.edge_threshold}% "
-                    f"for {user_id[:8]}... — skipping"
-                )
+        # Check if user already has a position (DB row with entry_price)
+        position = fetch_position(user_id, event_id)
+        if position and position.get("entry_price") is not None:
+            # Already holding — don't log every tick
             return
 
-        # 8. Check edge persistence
-        if not self._check_edge_persistence(game_id, edge, user_settings.edge_threshold):
-            write_log(
-                user_id=user_id,
-                level="INFO",
-                message=f"{game_label}: Edge {edge:.1f}% detected but not yet persistent "
-                        f"({len(self.edge_history.get(game_id, []))}/"
-                        f"{EDGE_PERSISTENCE_REQUIRED} cycles)",
-                event_id=event_id,
-                metadata={"reason_code": "BLOCKED_EDGE_NOT_PERSISTENT"},
-            )
-            return
-
-        # 9. All pass → compute contract count and create PENDING_ENTRY
-        intent_price = self._get_intent_price(signal)
-        if not intent_price or intent_price <= 0 or intent_price >= 1:
-            logger.warning(
-                f"  Invalid intent price {intent_price} for {signal.recommended_ticker} "
-                f"— skipping entry"
-            )
-            return
-
-        contracts = self._compute_contracts(user_settings, intent_price)
+        # Signal qualifies — log it (frontend will act on the signal directly)
         side = "HOME" if signal.recommended_action == "BUY_HOME" else "AWAY"
-        now = datetime.now(timezone.utc).isoformat()
-
-        upsert_position(user_id, event_id, {
-            "game_id": game_id,
-            "state": "PENDING_ENTRY",
-            "side": side,
-            "ticker": signal.recommended_ticker,
-            "home_team": home_team,
-            "away_team": away_team,
-            "intent_price": round(intent_price, 4),
-            "intent_contracts": contracts,
-            "intent_side": "yes",
-            "intent_created_at": now,
-        })
-
-        write_log(
-            user_id=user_id,
-            level="TRADE",
-            message=(
-                f"{game_label}: ENTRY INTENT: {signal.recommended_action} "
-                f"{signal.recommended_ticker} x{contracts} @ "
-                f"{intent_price * 100:.0f}c (edge={edge:.1f}%)"
-            ),
-            event_id=event_id,
-            metadata={
-                "reason_code": "ENTRY_INTENT_CREATED",
-                "action": signal.recommended_action,
-                "ticker": signal.recommended_ticker,
-                "contracts": contracts,
-                "price": intent_price,
-                "edge": edge,
-            },
-        )
-
         logger.info(
-            f"  PENDING_ENTRY for user {user_id[:8]}...: "
-            f"{signal.recommended_action} x{contracts} @ {intent_price * 100:.0f}c "
-            f"(edge={edge:.1f}%)"
+            f"  Signal qualifies for {user_id[:8]}...: "
+            f"{signal.recommended_action} (edge={edge:.1f}%)"
         )
 
     def monitor_exits(
@@ -371,10 +163,10 @@ class PositionManager:
         home_team: str,
         away_team: str,
     ) -> None:
-        """Check all active positions for take-profit, stop-loss, or late-game exit.
+        """Check positions for take-profit, stop-loss, or late-game exit.
 
-        Called once per tick per game by the orchestrator. Does not depend on
-        signal evaluation — runs independently against current market prices.
+        Instead of creating PENDING_EXIT, sets sell_signal on the position row.
+        Frontend polls for sell_signal and fires sell orders.
         """
         home_full = ABBR_TO_TEAM.get(home_team, home_team)
         away_full = ABBR_TO_TEAM.get(away_team, away_team)
@@ -400,18 +192,20 @@ class PositionManager:
         if not event_id:
             return
 
-        # Fetch all LONG positions for this event
-        long_positions = fetch_long_positions_for_event(event_id)
+        # Fetch all positions with entry_price for this event
+        positions = fetch_positions_with_entry_price(event_id)
 
-        for pos in long_positions:
+        for pos in positions:
             user_id = pos["user_id"]
-            state = pos["state"]
             entry_price = pos.get("entry_price")
-            quantity = pos.get("quantity")
             side = pos.get("side")  # "HOME" or "AWAY"
             ticker = pos.get("ticker")
 
-            if not entry_price or not quantity or not side or not ticker:
+            if not entry_price or not side or not ticker:
+                continue
+
+            # Skip if sell_signal already set (frontend hasn't acted yet)
+            if pos.get("sell_signal") is not None:
                 continue
 
             current_bid = home_bid if side == "HOME" else away_bid
@@ -456,14 +250,9 @@ class PositionManager:
                 exit_reason_code = "EXIT_LATE_GAME"
 
             if exit_reason:
-                # Create PENDING_EXIT intent
-                now = datetime.now(timezone.utc).isoformat()
+                # Set sell_signal on position row — frontend will fire the sell
                 upsert_position(user_id, event_id, {
-                    "state": "PENDING_EXIT",
-                    "intent_price": round(current_bid, 4),
-                    "intent_contracts": quantity,
-                    "intent_side": "yes",
-                    "intent_created_at": now,
+                    "sell_signal": round(current_bid, 4),
                 })
 
                 write_log(
@@ -476,77 +265,25 @@ class PositionManager:
                         "entry_price": entry_price,
                         "current_bid": current_bid,
                         "pnl_per_contract": round(pnl_per_contract, 4),
-                        "quantity": quantity,
                         "ticker": ticker,
                     },
                 )
 
                 logger.info(
-                    f"  PENDING_EXIT for {user_id[:8]}...: {exit_reason}"
+                    f"  sell_signal set for {user_id[:8]}...: {exit_reason}"
                 )
 
     def expire_stale_intents(self) -> None:
-        """Find PENDING_ENTRY and PENDING_EXIT positions older than 35s and reset.
+        """Clear sell_signal if it's been set for too long (frontend didn't act).
 
-        Called once per tick (not per user).
-        - Expired PENDING_ENTRY → reset to FLAT
-        - Expired PENDING_EXIT → restore to LONG_* (backend will retry next tick)
+        This is a simple cleanup — if the sell_signal was set but the frontend
+        didn't fire within 60s, clear it so the backend can re-trigger on the
+        next tick if conditions still warrant an exit.
         """
-        stale = fetch_stale_pending_intents(max_age_seconds=35)
-        for pos in stale:
-            user_id = pos["user_id"]
-            event_id = pos["event_id"]
-            was_exit = pos.get("state") == "PENDING_EXIT"
-
-            if was_exit:
-                # Failed exit attempt — restore to LONG state so we retry
-                side = pos.get("side")
-                restore_state = f"LONG_{side}" if side in ("HOME", "AWAY") else "LONG_HOME"
-                upsert_position(user_id, event_id, {
-                    "state": restore_state,
-                    "intent_price": None,
-                    "intent_contracts": None,
-                    "intent_side": None,
-                    "intent_created_at": None,
-                })
-                expire_label = f"{pos.get('away_team', '?')}@{pos.get('home_team', '?')}"
-                write_log(
-                    user_id=user_id,
-                    level="INFO",
-                    message=f"{expire_label}: PENDING_EXIT expired (35s timeout) — restored to LONG",
-                    event_id=event_id,
-                    metadata={"reason_code": "EXIT_INTENT_EXPIRED"},
-                )
-                logger.info(
-                    f"  Expired stale PENDING_EXIT for user {user_id[:8]}... "
-                    f"on event {event_id} — restored to {restore_state}"
-                )
-            else:
-                # Expired entry intent — reset to FLAT
-                upsert_position(user_id, event_id, {
-                    "game_id": pos.get("game_id"),
-                    "state": "FLAT",
-                    "side": None,
-                    "ticker": None,
-                    "home_team": pos.get("home_team"),
-                    "away_team": pos.get("away_team"),
-                    "intent_price": None,
-                    "intent_contracts": None,
-                    "intent_side": None,
-                    "intent_created_at": None,
-                })
-                expire_label = f"{pos.get('away_team', '?')}@{pos.get('home_team', '?')}"
-                write_log(
-                    user_id=user_id,
-                    level="INFO",
-                    message=f"{expire_label}: PENDING_ENTRY expired (35s timeout) — reset to FLAT",
-                    event_id=event_id,
-                    metadata={"reason_code": "ENTRY_INTENT_EXPIRED"},
-                )
-                logger.info(
-                    f"  Expired stale PENDING_ENTRY for user {user_id[:8]}... "
-                    f"on event {event_id}"
-                )
+        # For now this is a no-op — sell_signal doesn't have a timestamp.
+        # The frontend clears it immediately when it fires a sell, and the
+        # backend will re-set it on the next tick if TP/SL still triggers.
+        pass
 
     def _get_user_settings(self, user_id: str) -> dict | None:
         """Fetch a single user's settings. Uses the cached user list if available."""
@@ -587,31 +324,6 @@ class PositionManager:
             )
 
         return None
-
-    def _check_edge_persistence(
-        self, game_id: str, edge: float, threshold: float
-    ) -> bool:
-        """Track edge values and return True if edge has persisted 2+ cycles.
-
-        Maintains a list of recent edges per game_id.
-        Resets if edge drops below threshold.
-        """
-        if game_id not in self.edge_history:
-            self.edge_history[game_id] = []
-
-        history = self.edge_history[game_id]
-
-        if edge >= threshold:
-            history.append(edge)
-            # Keep only the last few entries
-            if len(history) > 10:
-                self.edge_history[game_id] = history[-10:]
-        else:
-            # Edge dropped below threshold — reset
-            self.edge_history[game_id] = []
-            return False
-
-        return len(history) >= EDGE_PERSISTENCE_REQUIRED
 
     def _get_intent_price(self, signal: TradeSignal) -> float | None:
         """Get the appropriate price for the trade intent."""

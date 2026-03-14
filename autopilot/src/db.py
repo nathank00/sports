@@ -189,42 +189,24 @@ def upsert_position(user_id: str, event_id: str, data: dict) -> None:
         logger.error(f"Failed to upsert position for {user_id}/{event_id}: {e}")
 
 
-def fetch_stale_pending_intents(max_age_seconds: int = 35) -> list[dict]:
-    """Find PENDING_ENTRY and PENDING_EXIT positions older than max_age_seconds."""
-    from datetime import datetime, timezone, timedelta
-
-    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)).isoformat()
-    try:
-        result = (
-            supabase.table("autopilot_positions")
-            .select("*")
-            .in_("state", ["PENDING_ENTRY", "PENDING_EXIT"])
-            .lt("intent_created_at", cutoff)
-            .execute()
-        )
-        return result.data or []
-    except Exception as e:
-        logger.error(f"Failed to fetch stale intents: {e}")
-        return []
-
-
-def fetch_long_positions_for_event(event_id: str) -> list[dict]:
-    """Fetch all LONG_HOME and LONG_AWAY positions for a given event.
+def fetch_positions_with_entry_price(event_id: str) -> list[dict]:
+    """Fetch all positions with an entry_price for a given event.
 
     Used by monitor_exits() to check TP/SL/late-game conditions
-    across all active users holding positions on this event.
+    across all users holding positions on this event.
+    No state column — if a row exists with entry_price, user has a position.
     """
     try:
         result = (
             supabase.table("autopilot_positions")
             .select("*")
             .eq("event_id", event_id)
-            .in_("state", ["LONG_HOME", "LONG_AWAY"])
+            .not_("entry_price", "is", "null")
             .execute()
         )
         return result.data or []
     except Exception as e:
-        logger.error(f"Failed to fetch long positions for {event_id}: {e}")
+        logger.error(f"Failed to fetch positions for {event_id}: {e}")
         return []
 
 

@@ -3,7 +3,7 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
 import { hasKalshiKeys } from "@/lib/kalshi-crypto";
-import { fetchPositions, debugFetchPositionsRaw } from "@/lib/kalshi-api";
+import { fetchPositions } from "@/lib/kalshi-api";
 import { AutopilotPositionManager } from "@/lib/autopilot-position-manager";
 import AutopilotGameCard from "./AutopilotGameCard";
 import type {
@@ -12,6 +12,7 @@ import type {
   AutopilotSettingsV2,
   AutopilotPosition,
   AutopilotLog,
+  PositionItem,
   SizingMode,
 } from "@/lib/types";
 
@@ -103,11 +104,13 @@ export default function AutopilotDashboard({ userId }: Props) {
     "unknown"
   );
   const [showSettings, setShowSettings] = useState(false);
-  const [positions, setPositions] = useState<Map<string, AutopilotPosition>>(
-    new Map()
-  );
   const [activityLog, setActivityLog] = useState<AutopilotLog[]>([]);
   const [showLog, setShowLog] = useState(false);
+
+  // Kalshi positions — source of truth, polled every 5s
+  const [kalshiPositions, setKalshiPositions] = useState<PositionItem[]>([]);
+  // DB positions — minimal, just for entry_price and game label lookup
+  const [dbPositions, setDbPositions] = useState<Map<string, AutopilotPosition>>(new Map());
 
   const positionManagerRef = useRef<AutopilotPositionManager | null>(null);
   // Ref to always call the latest handleNewSignal from the Supabase subscription
@@ -116,6 +119,8 @@ export default function AutopilotDashboard({ userId }: Props) {
   );
   // Track latest signal timestamp for polling fallback
   const latestSignalTsRef = useRef<string | null>(null);
+  // Ref to settings so signal handlers always see latest
+  const settingsRef = useRef<AutopilotSettingsV2 | null>(null);
 
   // ── Initialize position manager ─────────────────────────────────────
 
@@ -167,6 +172,7 @@ export default function AutopilotDashboard({ userId }: Props) {
 
         if (data && !error) {
           setSettings(data as AutopilotSettingsV2);
+          settingsRef.current = data as AutopilotSettingsV2;
         } else {
           // No Supabase row — migrate from localStorage or use defaults
           let migrated: Omit<AutopilotSettingsV2, "user_id" | "updated_at"> = {
@@ -205,26 +211,48 @@ export default function AutopilotDashboard({ userId }: Props) {
           };
           await supabase.from("autopilot_settings").upsert(row);
           setSettings(row);
+          settingsRef.current = row;
         }
       } catch (e) {
         console.error("Failed to load settings:", e);
         // Use defaults in memory
-        setSettings({
+        const defaults = {
           user_id: userId,
           ...DEFAULT_SETTINGS,
           updated_at: new Date().toISOString(),
-        });
+        };
+        setSettings(defaults);
+        settingsRef.current = defaults;
       }
     };
 
     loadSettings();
   }, [userId]);
 
-  // ── Subscribe to positions realtime ──────────────────────────────────
+  // ── Poll Kalshi positions every 5s (source of truth) ──────────────
 
   useEffect(() => {
-    // Fetch existing positions
-    const fetchPositions = async () => {
+    const poll = async () => {
+      try {
+        const positions = await fetchPositions();
+        setKalshiPositions(positions);
+
+        // Diff positions for change logging
+        positionManagerRef.current?.diffPositions(positions, dbPositions);
+      } catch {
+        // Silently fail — will retry in 5s
+      }
+    };
+
+    poll();
+    const interval = setInterval(poll, 5_000);
+    return () => clearInterval(interval);
+  }, [dbPositions]);
+
+  // ── Poll DB positions (minimal — just for entry_price + sell_signal) ──
+
+  useEffect(() => {
+    const poll = async () => {
       try {
         const { data } = await supabase
           .from("autopilot_positions")
@@ -235,68 +263,23 @@ export default function AutopilotDashboard({ userId }: Props) {
           const map = new Map<string, AutopilotPosition>();
           for (const pos of data as AutopilotPosition[]) {
             map.set(pos.event_id, pos);
-            // Forward any pending intents to position manager for execution
-            if (pos.state === "PENDING_ENTRY" || pos.state === "PENDING_EXIT") {
-              positionManagerRef.current?.handlePositionChange(pos);
-            }
           }
-          setPositions(map);
+          setDbPositions(map);
         }
       } catch (e) {
-        console.error("Failed to fetch positions:", e);
+        console.error("DB positions poll error:", e);
       }
+
+      // Check for sell signals
+      await positionManagerRef.current?.checkSellSignals();
     };
 
-    fetchPositions();
-
-    // Subscribe to INSERT and UPDATE events
-    const channel = supabase
-      .channel("autopilot-positions")
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "autopilot_positions",
-          filter: `user_id=eq.${userId}`,
-        },
-        (payload) => {
-          if (payload.eventType === "DELETE") {
-            const old = payload.old as { event_id?: string };
-            if (old?.event_id) {
-              setPositions((prev) => {
-                const next = new Map(prev);
-                next.delete(old.event_id!);
-                return next;
-              });
-            }
-            return;
-          }
-
-          const position = payload.new as AutopilotPosition;
-          if (position) {
-            setPositions((prev) => {
-              const next = new Map(prev);
-              next.set(position.event_id, position);
-              return next;
-            });
-
-            // Forward to position manager for execution (handles PENDING_ENTRY)
-            positionManagerRef.current?.handlePositionChange(position);
-          }
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
+    poll();
+    const interval = setInterval(poll, 5_000);
+    return () => clearInterval(interval);
   }, [userId]);
 
   // ── Fetch logs from Supabase + poll every 5s ─────────────────────────
-  // Supabase Realtime is unreliable for this table, so we poll instead.
-  // The onLog callback (above) still provides instant display for
-  // frontend-generated logs; polling catches backend-generated logs.
 
   useEffect(() => {
     const cutoff = getGameDayCutoffUTC();
@@ -314,13 +297,20 @@ export default function AutopilotDashboard({ userId }: Props) {
         if (data) {
           const dbLogs = data as AutopilotLog[];
           setActivityLog((prev) => {
-            // Keep very recent in-memory-only logs (from onLog callback)
-            // that may not have reached the DB yet
-            const recentInMemory = prev.filter(
-              (p) =>
-                p.id < 0 &&
-                Date.now() - new Date(p.timestamp).getTime() < 10_000
-            );
+            // Keep very recent in-memory-only logs that may not have reached the DB yet
+            const recentInMemory = prev.filter((p) => {
+              if (p.id >= 0) return false;
+              if (Date.now() - new Date(p.timestamp).getTime() >= 10_000)
+                return false;
+              const pTime = new Date(p.timestamp).getTime();
+              const hasDupe = dbLogs.some(
+                (db) =>
+                  db.level === p.level &&
+                  db.message === p.message &&
+                  Math.abs(new Date(db.timestamp).getTime() - pTime) < 5_000
+              );
+              return !hasDupe;
+            });
             if (recentInMemory.length === 0) return dbLogs;
             const merged = [...recentInMemory, ...dbLogs];
             merged.sort(
@@ -377,50 +367,6 @@ export default function AutopilotDashboard({ userId }: Props) {
       supabase.removeChannel(channel);
     };
   }, []);
-
-  // ── Position polling fallback (catches PENDING_ENTRY/EXIT if Realtime misses them) ──
-  // Also recovers positions stuck in EXITING for more than 30 seconds.
-
-  useEffect(() => {
-    const pollPendingPositions = async () => {
-      try {
-        const { data } = await supabase
-          .from("autopilot_positions")
-          .select("*")
-          .eq("user_id", userId)
-          .in("state", ["PENDING_ENTRY", "PENDING_EXIT", "EXITING"]);
-
-        if (data && data.length > 0) {
-          for (const pos of data as AutopilotPosition[]) {
-            // Update React state so UI reflects the position
-            setPositions((prev) => {
-              const next = new Map(prev);
-              next.set(pos.event_id, pos);
-              return next;
-            });
-
-            if (pos.state === "EXITING") {
-              // Recover stuck EXITING positions (stuck for > 30s)
-              const updatedAt = pos.updated_at ? new Date(pos.updated_at).getTime() : 0;
-              if (Date.now() - updatedAt > 30_000) {
-                positionManagerRef.current?.recoverExitingPosition(pos);
-              }
-            } else {
-              // Forward PENDING_ENTRY / PENDING_EXIT to position manager for execution
-              positionManagerRef.current?.handlePositionChange(pos);
-            }
-          }
-        }
-      } catch (e) {
-        console.error("Position poll error:", e);
-      }
-    };
-
-    // Poll immediately on mount, then every 5 seconds
-    pollPendingPositions();
-    const interval = setInterval(pollPendingPositions, 5_000);
-    return () => clearInterval(interval);
-  }, [userId]);
 
   // ── Signal polling fallback (in case Realtime subscription isn't working) ──
 
@@ -572,6 +518,12 @@ export default function AutopilotDashboard({ userId }: Props) {
     });
 
     setSystemStatus("live");
+
+    // If auto-execute is enabled, evaluate for entry
+    const currentSettings = settingsRef.current;
+    if (currentSettings?.auto_execute_enabled && positionManagerRef.current) {
+      positionManagerRef.current.evaluateSignal(signal, currentSettings);
+    }
   }, []);
 
   // Keep ref in sync so the Supabase subscription always calls the latest version
@@ -588,6 +540,7 @@ export default function AutopilotDashboard({ userId }: Props) {
       updated_at: new Date().toISOString(),
     };
     setSettings(next);
+    settingsRef.current = next;
 
     try {
       await supabase.from("autopilot_settings").upsert(next);
@@ -629,15 +582,10 @@ export default function AutopilotDashboard({ userId }: Props) {
     );
   };
 
-  /** Find position for a game by matching game_id, falling back to team matching. */
-  const getPositionForGame = useCallback(
+  /** Find DB position for a game by matching teams. */
+  const getDbPositionForGame = useCallback(
     (game: AutopilotGame): AutopilotPosition | null => {
-      // Direct match by game_id (ESPN ID)
-      for (const pos of positions.values()) {
-        if (pos.game_id === game.gameId) return pos;
-      }
-      // Fallback: match by teams
-      for (const pos of positions.values()) {
+      for (const pos of dbPositions.values()) {
         if (
           pos.home_team === game.homeTeam &&
           pos.away_team === game.awayTeam
@@ -647,7 +595,27 @@ export default function AutopilotDashboard({ userId }: Props) {
       }
       return null;
     },
-    [positions]
+    [dbPositions]
+  );
+
+  /** Find Kalshi position for a game by matching ticker prefix to DB position. */
+  const getKalshiPositionForGame = useCallback(
+    (game: AutopilotGame): PositionItem | null => {
+      // First find the DB position to get the ticker
+      const dbPos = getDbPositionForGame(game);
+      if (dbPos?.ticker) {
+        const eventPrefix = dbPos.ticker.substring(0, dbPos.ticker.lastIndexOf("-"));
+        const match = kalshiPositions.find(
+          (p) => p.position > 0 && p.ticker.startsWith(eventPrefix)
+        );
+        if (match) return match;
+      }
+
+      // Fallback: check all Kalshi positions for KXNBA tickers matching game teams
+      // (This handles cases where DB position doesn't exist yet but Kalshi has it)
+      return null;
+    },
+    [kalshiPositions, getDbPositionForGame]
   );
 
   /** Check if a game is finished (Final, Final/OT, etc.). */
@@ -915,22 +883,6 @@ export default function AutopilotDashboard({ userId }: Props) {
               </div>
               <div>
                 <label className="text-neutral-500 block mb-1">
-                  Cooldown (sec)
-                </label>
-                <input
-                  type="number"
-                  value={effectiveSettings.cooldown_seconds}
-                  onChange={(e) =>
-                    updateSettings({
-                      cooldown_seconds: Number(e.target.value),
-                    })
-                  }
-                  className="w-full bg-neutral-800 border border-neutral-700 rounded px-2 py-1 text-white"
-                  min="10"
-                />
-              </div>
-              <div>
-                <label className="text-neutral-500 block mb-1">
                   Max Contracts / Bet
                 </label>
                 <input
@@ -939,22 +891,6 @@ export default function AutopilotDashboard({ userId }: Props) {
                   onChange={(e) =>
                     updateSettings({
                       max_contracts_per_bet: Number(e.target.value),
-                    })
-                  }
-                  className="w-full bg-neutral-800 border border-neutral-700 rounded px-2 py-1 text-white"
-                  min="1"
-                />
-              </div>
-              <div>
-                <label className="text-neutral-500 block mb-1">
-                  Max Exposure / Game ($)
-                </label>
-                <input
-                  type="number"
-                  value={effectiveSettings.max_exposure_per_game}
-                  onChange={(e) =>
-                    updateSettings({
-                      max_exposure_per_game: Number(e.target.value),
                     })
                   }
                   className="w-full bg-neutral-800 border border-neutral-700 rounded px-2 py-1 text-white"
@@ -1038,7 +974,8 @@ export default function AutopilotDashboard({ userId }: Props) {
               <AutopilotGameCard
                 key={game.gameId}
                 game={game}
-                position={getPositionForGame(game)}
+                dbPosition={getDbPositionForGame(game)}
+                kalshiPosition={getKalshiPositionForGame(game)}
                 edgeThreshold={effectiveSettings.edge_threshold}
                 onManualExit={handleManualExit}
                 isFinished={isGameFinished(game)}

@@ -203,48 +203,23 @@ export interface AutopilotSettings {
   maxExposurePerGame: number;
 }
 
-// ── Autopilot v2 types (position-based architecture) ─────────────────
+// ── Autopilot v2 types (simplified — Kalshi is source of truth) ───────
 
-/** Position state machine states. */
-export type PositionState =
-  | "FLAT"
-  | "PENDING_ENTRY"
-  | "PENDING_EXIT"
-  | "LONG_HOME"
-  | "LONG_AWAY"
-  | "EXITING"
-  | "LOCKED";
-
-/** A managed position for one event (one row in autopilot_positions). */
+/**
+ * Minimal position record in autopilot_positions.
+ * Exists ONLY so the backend can check entry_price for TP/SL.
+ * Kalshi API is the source of truth for what we actually own.
+ */
 export interface AutopilotPosition {
-  id: number;
   user_id: string;
   event_id: string;
-  game_id: string;
-  state: PositionState;
-  side: "HOME" | "AWAY" | null;
-  ticker: string | null;
+  ticker: string;
+  side: "HOME" | "AWAY";
+  entry_price: number;
   home_team: string;
   away_team: string;
-  /** Intent fields — set by backend when state → PENDING_ENTRY */
-  intent_price: number | null;
-  intent_contracts: number | null;
-  intent_side: string | null;
-  intent_created_at: string | null;
-  /** Fill fields — set by frontend on order fill */
-  entry_price: number | null;
-  quantity: number | null;
-  entry_timestamp: string | null;
-  /** Exit thresholds — set on entry, can be overridden per-game */
-  take_profit_price: number | null;
-  stop_loss_price: number | null;
-  /** Exit results — set by frontend on exit fill */
-  exit_price: number | null;
-  exit_timestamp: string | null;
-  realized_pnl: number | null;
-  /** Cooldown after exit */
-  cooldown_until: string | null;
-  updated_at: string;
+  /** Set by backend when TP/SL triggers — bid price to sell at. Cleared by frontend after firing sell. */
+  sell_signal: number | null;
 }
 
 /** Autopilot settings (persisted in Supabase, per-user). */

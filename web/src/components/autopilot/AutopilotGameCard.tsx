@@ -1,11 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import type { AutopilotGame, AutopilotPosition } from "@/lib/types";
+import type { AutopilotGame, AutopilotPosition, PositionItem } from "@/lib/types";
 
 interface Props {
   game: AutopilotGame;
-  position: AutopilotPosition | null;
+  dbPosition: AutopilotPosition | null;
+  kalshiPosition: PositionItem | null;
   edgeThreshold: number;
   onManualExit: (position: AutopilotPosition) => void;
   isFinished?: boolean;
@@ -47,186 +48,75 @@ function formatStartTime(iso: string): string {
   }
 }
 
-// ── Position state badge ─────────────────────────────────────────────
-
-function PositionBadge({ state, label }: { state: string; label?: string }) {
-  const config: Record<string, { bg: string; text: string; label: string }> = {
-    FLAT: { bg: "bg-neutral-800", text: "text-neutral-500", label: "FLAT" },
-    PENDING_ENTRY: {
-      bg: "bg-yellow-900/40",
-      text: "text-yellow-400",
-      label: "PENDING",
-    },
-    LONG_HOME: {
-      bg: "bg-green-900/40",
-      text: "text-green-400",
-      label: "LONG",
-    },
-    LONG_AWAY: {
-      bg: "bg-green-900/40",
-      text: "text-green-400",
-      label: "LONG",
-    },
-    PENDING_EXIT: {
-      bg: "bg-orange-900/40",
-      text: "text-orange-400",
-      label: "EXITING...",
-    },
-    EXITING: {
-      bg: "bg-blue-900/40",
-      text: "text-blue-400",
-      label: "EXITING",
-    },
-    LOCKED: {
-      bg: "bg-neutral-800",
-      text: "text-neutral-400",
-      label: "LOCKED",
-    },
-  };
-
-  const c = config[state] || config.FLAT;
-
-  return (
-    <span
-      className={`text-xs font-medium px-2 py-0.5 rounded border ${c.bg} ${c.text} border-current/20`}
-    >
-      {label || c.label}
-    </span>
-  );
-}
-
-// ── Position details section ─────────────────────────────────────────
+// ── Position display section ─────────────────────────────────────────
 
 function PositionSection({
-  position,
+  dbPosition,
+  kalshiPosition,
   currentHomePrice,
   currentAwayPrice,
   onManualExit,
 }: {
-  position: AutopilotPosition;
+  dbPosition: AutopilotPosition;
+  kalshiPosition: PositionItem;
   currentHomePrice?: number | null;
   currentAwayPrice?: number | null;
   onManualExit: (position: AutopilotPosition) => void;
 }) {
-  const isLong =
-    position.state === "LONG_HOME" || position.state === "LONG_AWAY";
-  const isLocked = position.state === "LOCKED";
-  const isPending = position.state === "PENDING_ENTRY";
-  const isPendingExit = position.state === "PENDING_EXIT";
-  const isExiting = position.state === "EXITING";
+  const quantity = kalshiPosition.position;
+  const entryPrice = dbPosition.entry_price;
+  const side = dbPosition.side;
 
   // Current market price for this side
-  const currentPrice =
-    position.side === "HOME" ? currentHomePrice : currentAwayPrice;
+  const currentPrice = side === "HOME" ? currentHomePrice : currentAwayPrice;
 
   // Unrealized P&L
   const unrealizedPnl =
-    isLong &&
-    position.entry_price != null &&
-    position.quantity != null &&
-    currentPrice != null
-      ? (currentPrice - position.entry_price) * position.quantity
+    entryPrice != null && currentPrice != null
+      ? (currentPrice - entryPrice) * quantity
       : null;
 
-  // Resolve the 3-letter team abbreviation for the side we bought
-  const teamAbbr =
-    position.side === "HOME"
-      ? position.home_team
-      : position.side === "AWAY"
-        ? position.away_team
-        : null;
-
-  // Don't render anything for FLAT positions
-  if (position.state === "FLAT") return null;
+  const teamAbbr = side === "HOME" ? dbPosition.home_team : dbPosition.away_team;
 
   return (
     <div className="text-xs mb-2 py-2 px-2 rounded bg-neutral-800/50 border border-neutral-800">
       {/* Header row: team badge + EXIT button */}
       <div className="flex items-center justify-between mb-1">
         <div className="flex items-center gap-2">
-          <PositionBadge
-            state={position.state}
-            label={
-              (isLong || isExiting) && teamAbbr ? teamAbbr : undefined
-            }
-          />
+          <span className="text-xs font-medium px-2 py-0.5 rounded border bg-green-900/40 text-green-400 border-current/20">
+            {teamAbbr}
+          </span>
         </div>
-        {isLong && (
-          <button
-            onClick={() => onManualExit(position)}
-            className="text-xs font-medium px-2 py-0.5 rounded bg-red-900/40 text-red-400 border border-red-800 hover:bg-red-900/60 transition-colors"
-          >
-            EXIT
-          </button>
-        )}
+        <button
+          onClick={() => onManualExit(dbPosition)}
+          className="text-xs font-medium px-2 py-0.5 rounded bg-red-900/40 text-red-400 border border-red-800 hover:bg-red-900/60 transition-colors"
+        >
+          EXIT
+        </button>
       </div>
 
-      {/* Pending auto-exit info */}
-      {isPendingExit && (
-        <div className="text-orange-400/70 py-0.5 animate-pulse">
-          Auto-exit triggered — placing sell order...
+      {/* Position details */}
+      <div className="flex items-center justify-between py-0.5">
+        <span className="text-neutral-500">
+          {quantity}x @ {(entryPrice * 100).toFixed(0)}c
+        </span>
+        <div className="flex items-center gap-2">
+          {unrealizedPnl != null && (
+            <span
+              className={`font-mono font-medium ${
+                unrealizedPnl >= 0 ? "text-green-400" : "text-red-400"
+              }`}
+            >
+              {unrealizedPnl >= 0 ? "+" : ""}${unrealizedPnl.toFixed(2)}
+            </span>
+          )}
+          {currentPrice != null && (
+            <span className="text-neutral-600">
+              now {(currentPrice * 100).toFixed(0)}c
+            </span>
+          )}
         </div>
-      )}
-
-      {/* Entry details (for LONG, EXITING, PENDING_EXIT, and LOCKED states) */}
-      {(isLong || isLocked || isExiting || isPendingExit) && position.entry_price != null && (
-        <div className="flex items-center justify-between py-0.5">
-          <span className="text-neutral-500">
-            {position.quantity}x @ {(position.entry_price * 100).toFixed(0)}c
-          </span>
-          <div className="flex items-center gap-2">
-            {unrealizedPnl != null && (
-              <span
-                className={`font-mono font-medium ${
-                  unrealizedPnl >= 0 ? "text-green-400" : "text-red-400"
-                }`}
-              >
-                {unrealizedPnl >= 0 ? "+" : ""}${unrealizedPnl.toFixed(2)}
-              </span>
-            )}
-            {currentPrice != null && (
-              <span className="text-neutral-600">
-                now {(currentPrice * 100).toFixed(0)}c
-              </span>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Pending intent info */}
-      {isPending && position.intent_price != null && (
-        <div className="text-yellow-400/70 py-0.5 animate-pulse">
-          Intent: {position.intent_contracts}x @{" "}
-          {(position.intent_price * 100).toFixed(0)}c — placing order...
-        </div>
-      )}
-
-      {/* Locked (completed) position with realized P&L */}
-      {isLocked && position.realized_pnl != null && (
-        <div className="flex items-center justify-between py-0.5 mt-0.5">
-          <span className="text-neutral-500">
-            Exited @{" "}
-            {position.exit_price != null
-              ? `${(position.exit_price * 100).toFixed(0)}c`
-              : "?"}
-          </span>
-          <span
-            className={`font-mono font-medium ${
-              position.realized_pnl >= 0 ? "text-green-400" : "text-red-400"
-            }`}
-          >
-            {position.realized_pnl >= 0 ? "+" : ""}$
-            {position.realized_pnl.toFixed(2)}
-          </span>
-        </div>
-      )}
-
-      {/* Exiting state */}
-      {isExiting && (
-        <div className="text-blue-400 py-0.5 animate-pulse">
-          Placing sell order...
-        </div>
-      )}
+      </div>
     </div>
   );
 }
@@ -235,11 +125,13 @@ function PositionSection({
 
 function PregameCard({
   game,
-  position,
+  dbPosition,
+  kalshiPosition,
   onManualExit,
 }: {
   game: AutopilotGame;
-  position: AutopilotPosition | null;
+  dbPosition: AutopilotPosition | null;
+  kalshiPosition: PositionItem | null;
   onManualExit: (position: AutopilotPosition) => void;
 }) {
   const homePrice = game.kalshiHomePrice;
@@ -294,10 +186,11 @@ function PregameCard({
         </div>
       )}
 
-      {/* Position section */}
-      {position && (
+      {/* Position section — only if Kalshi says we own contracts */}
+      {dbPosition && kalshiPosition && (
         <PositionSection
-          position={position}
+          dbPosition={dbPosition}
+          kalshiPosition={kalshiPosition}
           currentHomePrice={homePrice}
           currentAwayPrice={awayPrice}
           onManualExit={onManualExit}
@@ -315,12 +208,14 @@ function PregameCard({
 
 function LiveCard({
   game,
-  position,
+  dbPosition,
+  kalshiPosition,
   edgeThreshold,
   onManualExit,
 }: {
   game: AutopilotGame;
-  position: AutopilotPosition | null;
+  dbPosition: AutopilotPosition | null;
+  kalshiPosition: PositionItem | null;
   edgeThreshold: number;
   onManualExit: (position: AutopilotPosition) => void;
 }) {
@@ -507,10 +402,11 @@ function LiveCard({
         </div>
       )}
 
-      {/* Position section */}
-      {position && (
+      {/* Position section — from Kalshi + DB */}
+      {dbPosition && kalshiPosition && (
         <PositionSection
-          position={position}
+          dbPosition={dbPosition}
+          kalshiPosition={kalshiPosition}
           currentHomePrice={kalshiHomePrice}
           currentAwayPrice={kalshiAwayPrice}
           onManualExit={onManualExit}
@@ -573,11 +469,13 @@ function LiveCard({
 
 function FinishedCard({
   game,
-  position,
+  dbPosition,
+  kalshiPosition,
   onManualExit,
 }: {
   game: AutopilotGame;
-  position: AutopilotPosition | null;
+  dbPosition: AutopilotPosition | null;
+  kalshiPosition: PositionItem | null;
   onManualExit: (position: AutopilotPosition) => void;
 }) {
   const s = game.latestSignal!;
@@ -613,10 +511,11 @@ function FinishedCard({
         </span>
       </div>
 
-      {/* Position section — show if position exists (realized P&L, etc.) */}
-      {position && position.state !== "FLAT" && (
+      {/* Position section — show if we still own contracts (Kalshi truth) */}
+      {dbPosition && kalshiPosition && (
         <PositionSection
-          position={position}
+          dbPosition={dbPosition}
+          kalshiPosition={kalshiPosition}
           currentHomePrice={game.kalshiHomePrice ?? s.kalshi_home_price}
           currentAwayPrice={game.kalshiAwayPrice ?? s.kalshi_away_price}
           onManualExit={onManualExit}
@@ -630,7 +529,8 @@ function FinishedCard({
 
 export default function AutopilotGameCard({
   game,
-  position,
+  dbPosition,
+  kalshiPosition,
   edgeThreshold,
   onManualExit,
   isFinished,
@@ -639,7 +539,8 @@ export default function AutopilotGameCard({
     return (
       <FinishedCard
         game={game}
-        position={position}
+        dbPosition={dbPosition}
+        kalshiPosition={kalshiPosition}
         onManualExit={onManualExit}
       />
     );
@@ -648,7 +549,8 @@ export default function AutopilotGameCard({
     return (
       <LiveCard
         game={game}
-        position={position}
+        dbPosition={dbPosition}
+        kalshiPosition={kalshiPosition}
         edgeThreshold={edgeThreshold}
         onManualExit={onManualExit}
       />
@@ -657,7 +559,8 @@ export default function AutopilotGameCard({
   return (
     <PregameCard
       game={game}
-      position={position}
+      dbPosition={dbPosition}
+      kalshiPosition={kalshiPosition}
       onManualExit={onManualExit}
     />
   );
