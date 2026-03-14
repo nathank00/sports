@@ -1,14 +1,19 @@
 # ─────────────────────────────────────────────────────────────
 # NBA Pipeline — GitHub Actions
 # ─────────────────────────────────────────────────────────────
-# Two scheduled jobs:
+# Two jobs:
 #
-#   1. current  — runs "current" mode 2x daily:
-#                   11:00 AM ET / 8:00 AM PT  (16:00 UTC) — early attempt
-#                   12:30 PM ET / 9:30 AM PT  (17:30 UTC) — catch late data
+#   1. current  — runs "current" mode every 30 min from 6–10 AM PT:
+#                   6:00 AM PT  (14:00 UTC) — earliest attempt
+#                   6:30 AM PT  (14:30 UTC)
+#                   7:00 AM PT  (15:00 UTC)
+#                   ... every 30 min ...
+#                   10:00 AM PT (18:00 UTC) — latest attempt
 #
-#                   No runs after 1 PM ET (10 AM PT) to avoid overwriting
-#                   pregame predictions with live/final game data.
+#                 predict.py skips games that already have predictions,
+#                 so only the first successful run writes predictions.
+#                 No runs after 10 AM PT to avoid overwriting pregame
+#                 predictions with live/final game data.
 #
 #   2. historical — manual-only, full rebuild from scratch
 #
@@ -20,10 +25,10 @@ name: NBA Pipeline
 
 on:
   schedule:
-    # 11:00 AM ET / 8:00 AM PT (16:00 UTC) — early attempt
-    - cron: "0 16 * * *"
-    # 12:30 PM ET / 9:30 AM PT (17:30 UTC) — catch games NBA posts late
-    - cron: "30 17 * * *"
+    # Every 30 min from 6 AM–10 AM PT (14:00–18:00 UTC)
+    # First run that finds complete NBA API data produces predictions.
+    - cron: "0,30 14-17 * * *"
+    - cron: "0 18 * * *"
 
   # Allow manual trigger from the Actions tab
   workflow_dispatch:
@@ -43,7 +48,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # ─── Scheduled Updates (3x daily) ──────────────────────────
+  # ─── Scheduled Updates (every 30 min, 6–10 AM PT) ──────────
   current:
     if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
