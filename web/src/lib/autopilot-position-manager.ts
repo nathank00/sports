@@ -62,8 +62,12 @@ export class AutopilotPositionManager {
     }
 
     if (position.state === "PENDING_EXIT") {
-      if (this.processingIntents.has(position.event_id)) return;
+      if (this.processingIntents.has(position.event_id)) {
+        this.onLog("INFO", `${position.away_team}@${position.home_team}: PENDING_EXIT skipped — already processing`, position.event_id);
+        return;
+      }
       this.processingIntents.add(position.event_id);
+      this.onLog("INFO", `${position.away_team}@${position.home_team}: Received PENDING_EXIT — starting auto-exit`, position.event_id);
       try {
         await this.executeAutoExit(position);
       } finally {
@@ -378,7 +382,14 @@ export class AutopilotPositionManager {
       }
     }
 
-    if (!ticker || !quantity || quantity <= 0) return;
+    if (!ticker || !quantity || quantity <= 0) {
+      this.onLog("INFO", `${gameLabel}: Auto-exit skipped — missing data (ticker=${ticker ?? "null"}, qty=${quantity ?? "null"})`, event_id);
+      this.writeLog("INFO", `${gameLabel}: Auto-exit skipped: ticker=${ticker ?? "null"}, qty=${quantity ?? "null"}`, event_id);
+      await this.updatePosition(event_id, {
+        state: longState, intent_price: null, intent_contracts: null, intent_side: null, intent_created_at: null,
+      });
+      return;
+    }
 
     this.onLog("INFO", `${gameLabel}: Executing auto-exit — selling ${ticker} x${quantity}`, event_id);
     this.writeLog("INFO", `Executing auto-exit: selling ${ticker} x${quantity}`, event_id);

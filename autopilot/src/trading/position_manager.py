@@ -126,6 +126,7 @@ class PositionManager:
         9. All pass → set state = PENDING_ENTRY with intent fields
         """
         user_id = user_settings.user_id
+        game_label = f"{away_team}@{home_team}"
 
         # 1. Skip NO_TRADE signals entirely (no logging needed)
         if signal.recommended_action == "NO_TRADE":
@@ -192,7 +193,7 @@ class PositionManager:
             write_log(
                 user_id=user_id,
                 level="BLOCKED",
-                message="Pending entry order exists — signal ignored",
+                message=f"{game_label}: Pending entry order exists — signal ignored",
                 event_id=event_id,
                 metadata={"reason_code": "BLOCKED_PENDING_ORDER_EXISTS"},
             )
@@ -203,7 +204,7 @@ class PositionManager:
             write_log(
                 user_id=user_id,
                 level="BLOCKED",
-                message="Pending exit order exists — signal ignored",
+                message=f"{game_label}: Pending exit order exists — signal ignored",
                 event_id=event_id,
                 metadata={"reason_code": "BLOCKED_EVENT_NOT_FLAT"},
             )
@@ -214,7 +215,7 @@ class PositionManager:
             write_log(
                 user_id=user_id,
                 level="BLOCKED",
-                message="Position is exiting — signal ignored",
+                message=f"{game_label}: Position is exiting — signal ignored",
                 event_id=event_id,
                 metadata={"reason_code": "BLOCKED_EVENT_NOT_FLAT"},
             )
@@ -229,7 +230,7 @@ class PositionManager:
                 write_log(
                     user_id=user_id,
                     level="BLOCKED",
-                    message=f"Anti-hedge: already {state}, cannot {signal.recommended_action}",
+                    message=f"{game_label}: Anti-hedge: already {state}, cannot {signal.recommended_action}",
                     event_id=event_id,
                     metadata={"reason_code": "BLOCKED_OPPOSITE_SIDE_POSITION_EXISTS"},
                 )
@@ -237,7 +238,7 @@ class PositionManager:
                 write_log(
                     user_id=user_id,
                     level="BLOCKED",
-                    message=f"Already {state} — cannot add to position",
+                    message=f"{game_label}: Already {state} — cannot add to position",
                     event_id=event_id,
                     metadata={"reason_code": "BLOCKED_EVENT_NOT_FLAT"},
                 )
@@ -248,7 +249,7 @@ class PositionManager:
             write_log(
                 user_id=user_id,
                 level="BLOCKED",
-                message=f"Position state {state} — signal ignored",
+                message=f"{game_label}: Position state {state} — signal ignored",
                 event_id=event_id,
                 metadata={"reason_code": "BLOCKED_EVENT_NOT_FLAT"},
             )
@@ -264,7 +265,7 @@ class PositionManager:
                     write_log(
                         user_id=user_id,
                         level="BLOCKED",
-                        message=f"Cooldown active ({remaining}s remaining)",
+                        message=f"{game_label}: Cooldown active ({remaining}s remaining)",
                         event_id=event_id,
                         metadata={"reason_code": "BLOCKED_COOLDOWN_ACTIVE"},
                     )
@@ -303,7 +304,7 @@ class PositionManager:
             write_log(
                 user_id=user_id,
                 level="INFO",
-                message=f"Edge {edge:.1f}% detected but not yet persistent "
+                message=f"{game_label}: Edge {edge:.1f}% detected but not yet persistent "
                         f"({len(self.edge_history.get(game_id, []))}/"
                         f"{EDGE_PERSISTENCE_REQUIRED} cycles)",
                 event_id=event_id,
@@ -341,7 +342,7 @@ class PositionManager:
             user_id=user_id,
             level="TRADE",
             message=(
-                f"ENTRY INTENT: {signal.recommended_action} "
+                f"{game_label}: ENTRY INTENT: {signal.recommended_action} "
                 f"{signal.recommended_ticker} x{contracts} @ "
                 f"{intent_price * 100:.0f}c (edge={edge:.1f}%)"
             ),
@@ -428,11 +429,12 @@ class PositionManager:
 
             exit_reason = None
             exit_reason_code = None
+            game_label = f"{away_team}@{home_team}"
 
             # Take-profit check
             if pnl_per_contract >= settings.take_profit:
                 exit_reason = (
-                    f"TAKE PROFIT: +{pnl_per_contract:.2f}/contract "
+                    f"{game_label}: TAKE PROFIT: +{pnl_per_contract:.2f}/contract "
                     f"(entry={entry_price:.2f}, bid={current_bid:.2f})"
                 )
                 exit_reason_code = "EXIT_TP_TRIGGERED"
@@ -440,7 +442,7 @@ class PositionManager:
             # Stop-loss check
             elif pnl_per_contract <= -settings.stop_loss:
                 exit_reason = (
-                    f"STOP LOSS: {pnl_per_contract:.2f}/contract "
+                    f"{game_label}: STOP LOSS: {pnl_per_contract:.2f}/contract "
                     f"(entry={entry_price:.2f}, bid={current_bid:.2f})"
                 )
                 exit_reason_code = "EXIT_SL_TRIGGERED"
@@ -448,7 +450,7 @@ class PositionManager:
             # Late-game forced exit: if game enters no-trade window while holding
             elif period >= 4 and seconds_remaining < NO_TRADE_SECONDS:
                 exit_reason = (
-                    f"LATE GAME EXIT: {seconds_remaining:.0f}s remaining in "
+                    f"{game_label}: LATE GAME EXIT: {seconds_remaining:.0f}s remaining in "
                     f"{'OT' if period > 4 else 'Q4'}"
                 )
                 exit_reason_code = "EXIT_LATE_GAME"
@@ -507,10 +509,11 @@ class PositionManager:
                     "intent_side": None,
                     "intent_created_at": None,
                 })
+                expire_label = f"{pos.get('away_team', '?')}@{pos.get('home_team', '?')}"
                 write_log(
                     user_id=user_id,
                     level="INFO",
-                    message="PENDING_EXIT expired (35s timeout) — restored to LONG",
+                    message=f"{expire_label}: PENDING_EXIT expired (35s timeout) — restored to LONG",
                     event_id=event_id,
                     metadata={"reason_code": "EXIT_INTENT_EXPIRED"},
                 )
@@ -532,10 +535,11 @@ class PositionManager:
                     "intent_side": None,
                     "intent_created_at": None,
                 })
+                expire_label = f"{pos.get('away_team', '?')}@{pos.get('home_team', '?')}"
                 write_log(
                     user_id=user_id,
                     level="INFO",
-                    message="PENDING_ENTRY expired (35s timeout) — reset to FLAT",
+                    message=f"{expire_label}: PENDING_ENTRY expired (35s timeout) — reset to FLAT",
                     event_id=event_id,
                     metadata={"reason_code": "ENTRY_INTENT_EXPIRED"},
                 )

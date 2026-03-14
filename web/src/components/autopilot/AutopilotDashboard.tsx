@@ -293,7 +293,10 @@ export default function AutopilotDashboard({ userId }: Props) {
     };
   }, [userId]);
 
-  // ── Fetch logs from Supabase + subscribe to realtime ─────────────────
+  // ── Fetch logs from Supabase + poll every 5s ─────────────────────────
+  // Supabase Realtime is unreliable for this table, so we poll instead.
+  // The onLog callback (above) still provides instant display for
+  // frontend-generated logs; polling catches backend-generated logs.
 
   useEffect(() => {
     const cutoff = getGameDayCutoffUTC();
@@ -309,7 +312,24 @@ export default function AutopilotDashboard({ userId }: Props) {
           .limit(100);
 
         if (data) {
-          setActivityLog(data as AutopilotLog[]);
+          const dbLogs = data as AutopilotLog[];
+          setActivityLog((prev) => {
+            // Keep very recent in-memory-only logs (from onLog callback)
+            // that may not have reached the DB yet
+            const recentInMemory = prev.filter(
+              (p) =>
+                p.id < 0 &&
+                Date.now() - new Date(p.timestamp).getTime() < 10_000
+            );
+            if (recentInMemory.length === 0) return dbLogs;
+            const merged = [...recentInMemory, ...dbLogs];
+            merged.sort(
+              (a, b) =>
+                new Date(b.timestamp).getTime() -
+                new Date(a.timestamp).getTime()
+            );
+            return merged.slice(0, 100);
+          });
         }
       } catch (e) {
         console.error("Failed to fetch logs:", e);
@@ -317,42 +337,10 @@ export default function AutopilotDashboard({ userId }: Props) {
     };
 
     fetchLogs();
-
-    // Subscribe to new log inserts (catches backend-generated logs).
-    // Logs from the in-browser position manager arrive instantly via the
-    // logCallback above, so we deduplicate here: skip if a log with the
-    // same message & level was already added within the last 5 seconds.
-    const channel = supabase
-      .channel("autopilot-logs")
-      .on(
-        "postgres_changes",
-        {
-          event: "INSERT",
-          schema: "public",
-          table: "autopilot_logs",
-          filter: `user_id=eq.${userId}`,
-        },
-        (payload) => {
-          const log = payload.new as AutopilotLog;
-          setActivityLog((prev) => {
-            const isDupe = prev.some(
-              (existing) =>
-                existing.message === log.message &&
-                existing.level === log.level &&
-                Math.abs(
-                  new Date(existing.timestamp).getTime() -
-                    new Date(log.timestamp).getTime()
-                ) < 5000
-            );
-            if (isDupe) return prev;
-            return [log, ...prev].slice(0, 100);
-          });
-        }
-      )
-      .subscribe();
+    const interval = setInterval(fetchLogs, 5_000);
 
     return () => {
-      supabase.removeChannel(channel);
+      clearInterval(interval);
     };
   }, [userId]);
 
