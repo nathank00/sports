@@ -77,15 +77,84 @@ export class AutopilotPositionManager {
     try {
       const markets = await fetchNbaMarkets();
       const market = markets.find((m) => m.ticker === position.ticker);
-      const currentBid = market?.yesBid;
-      if (currentBid == null) {
+
+      // Use the HIGHER of yesBid and lastPrice to avoid selling below market value.
+      // yesBid can be far below the displayed price on thin order books.
+      const yesBid = market?.yesBid;
+      const lastPrice = market?.lastPrice;
+
+      let exitPrice: number | null = null;
+      if (yesBid != null && lastPrice != null) {
+        exitPrice = Math.max(yesBid, lastPrice);
+      } else {
+        exitPrice = lastPrice ?? yesBid ?? null;
+      }
+
+      if (exitPrice == null) {
         this.onLog("INFO", `Could not get current price for ${position.ticker}`, position.event_id);
         return;
       }
-      await this.executeExit(position, currentBid, "MANUAL");
+
+      this.onLog("INFO", `Manual exit: bid=${yesBid != null ? (yesBid * 100).toFixed(0) + "c" : "N/A"}, last=${lastPrice != null ? (lastPrice * 100).toFixed(0) + "c" : "N/A"}, selling @ ${(exitPrice * 100).toFixed(0)}c`, position.event_id);
+
+      await this.executeExit(position, exitPrice, "MANUAL");
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
       this.onLog("INFO", `Manual exit failed: ${errMsg}`, position.event_id);
+    }
+  }
+
+  /**
+   * Recover a position stuck in EXITING state.
+   * Checks Kalshi for the actual holding and reconciles Supabase.
+   */
+  async recoverExitingPosition(position: AutopilotPosition): Promise<void> {
+    const { event_id, ticker, quantity, entry_price, home_team, away_team, side } = position;
+    if (!ticker) return;
+
+    // Prevent concurrent recovery attempts
+    if (this.processingIntents.has(event_id)) return;
+    this.processingIntents.add(event_id);
+
+    const gameLabel = `${away_team}@${home_team}`;
+    const longState = side === "HOME" ? "LONG_HOME" : "LONG_AWAY";
+
+    try {
+      this.onLog("INFO", `${gameLabel}: Recovering stuck EXITING position...`, event_id);
+
+      const owned = await this.getOwnedContracts(ticker);
+
+      if (owned === 0) {
+        // Exit completed on Kalshi — mark as FLAT (ready for re-entry)
+        await this.updatePosition(event_id, {
+          state: "FLAT",
+          side: null,
+          ticker: null,
+          exit_timestamp: new Date().toISOString(),
+          realized_pnl: null,
+          cooldown_until: null,
+          quantity: null,
+          intent_price: null, intent_contracts: null, intent_side: null, intent_created_at: null,
+        });
+
+        this.onLog("EXIT", `${gameLabel}: Recovery — exit confirmed (0 contracts on Kalshi), marked FLAT`, event_id);
+        this.writeLog("EXIT", `Recovery: EXITING → FLAT (0 contracts remaining on Kalshi)`, event_id);
+      } else {
+        // Still own contracts — revert to LONG
+        await this.updatePosition(event_id, {
+          state: longState as "LONG_HOME" | "LONG_AWAY",
+          quantity: owned,
+          intent_price: null, intent_contracts: null, intent_side: null, intent_created_at: null,
+        });
+
+        this.onLog("INFO", `${gameLabel}: Recovery — still own ${owned} contracts, reverted to ${longState}`, event_id);
+        this.writeLog("INFO", `Recovery: EXITING → ${longState} (still own ${owned} contracts)`, event_id);
+      }
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      this.onLog("INFO", `${gameLabel}: Recovery failed: ${errMsg}`, event_id);
+    } finally {
+      this.processingIntents.delete(event_id);
     }
   }
 
@@ -318,7 +387,18 @@ export class AutopilotPositionManager {
     try {
       const markets = await fetchNbaMarkets();
       const market = markets.find((m) => m.ticker === ticker);
-      if (market?.yesBid != null) exitPrice = market.yesBid;
+      if (market) {
+        // Use the higher of yesBid and lastPrice to avoid selling below market value
+        const bid = market.yesBid;
+        const last = market.lastPrice;
+        if (bid != null && last != null) {
+          exitPrice = Math.max(bid, last);
+        } else if (last != null) {
+          exitPrice = last;
+        } else if (bid != null) {
+          exitPrice = bid;
+        }
+      }
     } catch { /* use intent price */ }
 
     await this.updatePosition(event_id, { state: "EXITING" });
@@ -470,32 +550,37 @@ export class AutopilotPositionManager {
   }
 
   /**
-   * Record a confirmed exit fill → LOCKED.
+   * Record a confirmed exit fill → FLAT (ready for re-entry).
    */
   private async handleExitFill(
     eventId: string, ticker: string, exitPrice: number,
     fillCount: number, entryPrice: number | null, gameLabel: string
   ): Promise<void> {
     const pnl = entryPrice ? (exitPrice - entryPrice) * fillCount : null;
-    const cooldownUntil = new Date(Date.now() + ENTRY_FAILURE_COOLDOWN * 1000).toISOString();
 
     const success = await this.updatePosition(eventId, {
-      state: "LOCKED",
+      state: "FLAT",
+      side: null,
+      ticker: null,
       exit_price: exitPrice,
       exit_timestamp: new Date().toISOString(),
       realized_pnl: pnl ? Math.round(pnl * 100) / 100 : null,
-      cooldown_until: cooldownUntil,
+      cooldown_until: null,
+      quantity: null,
       intent_price: null, intent_contracts: null, intent_side: null, intent_created_at: null,
     });
 
     if (!success) {
       await new Promise((r) => setTimeout(r, 2000));
       await this.updatePosition(eventId, {
-        state: "LOCKED",
+        state: "FLAT",
+        side: null,
+        ticker: null,
         exit_price: exitPrice,
         exit_timestamp: new Date().toISOString(),
         realized_pnl: pnl ? Math.round(pnl * 100) / 100 : null,
-        cooldown_until: cooldownUntil,
+        cooldown_until: null,
+        quantity: null,
         intent_price: null, intent_contracts: null, intent_side: null, intent_created_at: null,
       });
     }

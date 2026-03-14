@@ -123,11 +123,23 @@ export default function AutopilotDashboard({ userId }: Props) {
     const logCallback = (
       level: string,
       message: string,
-      eventId?: string
+      eventId?: string,
+      metadata?: Record<string, unknown>
     ) => {
       console.log(
         `[Autopilot ${level}] ${message}${eventId ? ` (${eventId})` : ""}`
       );
+      // Add directly to activity log for instant UI feedback
+      const entry: AutopilotLog = {
+        id: -Date.now(),
+        user_id: userId,
+        timestamp: new Date().toISOString(),
+        event_id: eventId ?? null,
+        level: level as AutopilotLog["level"],
+        message,
+        metadata: metadata ?? null,
+      };
+      setActivityLog((prev) => [entry, ...prev].slice(0, 100));
     };
 
     const pm = new AutopilotPositionManager(userId, logCallback);
@@ -306,7 +318,10 @@ export default function AutopilotDashboard({ userId }: Props) {
 
     fetchLogs();
 
-    // Subscribe to new log inserts (from both frontend position manager and backend)
+    // Subscribe to new log inserts (catches backend-generated logs).
+    // Logs from the in-browser position manager arrive instantly via the
+    // logCallback above, so we deduplicate here: skip if a log with the
+    // same message & level was already added within the last 5 seconds.
     const channel = supabase
       .channel("autopilot-logs")
       .on(
@@ -319,7 +334,19 @@ export default function AutopilotDashboard({ userId }: Props) {
         },
         (payload) => {
           const log = payload.new as AutopilotLog;
-          setActivityLog((prev) => [log, ...prev].slice(0, 100));
+          setActivityLog((prev) => {
+            const isDupe = prev.some(
+              (existing) =>
+                existing.message === log.message &&
+                existing.level === log.level &&
+                Math.abs(
+                  new Date(existing.timestamp).getTime() -
+                    new Date(log.timestamp).getTime()
+                ) < 5000
+            );
+            if (isDupe) return prev;
+            return [log, ...prev].slice(0, 100);
+          });
         }
       )
       .subscribe();
@@ -364,6 +391,7 @@ export default function AutopilotDashboard({ userId }: Props) {
   }, []);
 
   // ── Position polling fallback (catches PENDING_ENTRY/EXIT if Realtime misses them) ──
+  // Also recovers positions stuck in EXITING for more than 30 seconds.
 
   useEffect(() => {
     const pollPendingPositions = async () => {
@@ -372,7 +400,7 @@ export default function AutopilotDashboard({ userId }: Props) {
           .from("autopilot_positions")
           .select("*")
           .eq("user_id", userId)
-          .in("state", ["PENDING_ENTRY", "PENDING_EXIT"]);
+          .in("state", ["PENDING_ENTRY", "PENDING_EXIT", "EXITING"]);
 
         if (data && data.length > 0) {
           for (const pos of data as AutopilotPosition[]) {
@@ -382,8 +410,17 @@ export default function AutopilotDashboard({ userId }: Props) {
               next.set(pos.event_id, pos);
               return next;
             });
-            // Forward to position manager for execution
-            positionManagerRef.current?.handlePositionChange(pos);
+
+            if (pos.state === "EXITING") {
+              // Recover stuck EXITING positions (stuck for > 30s)
+              const updatedAt = pos.updated_at ? new Date(pos.updated_at).getTime() : 0;
+              if (Date.now() - updatedAt > 30_000) {
+                positionManagerRef.current?.recoverExitingPosition(pos);
+              }
+            } else {
+              // Forward PENDING_ENTRY / PENDING_EXIT to position manager for execution
+              positionManagerRef.current?.handlePositionChange(pos);
+            }
           }
         }
       } catch (e) {
