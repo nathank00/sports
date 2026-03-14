@@ -201,10 +201,10 @@ def run_cleanup(target_date: str | None = None) -> None:
     except Exception as e:
         logger.error(f"Failed to delete old positions: {e}")
 
-    # ── Step 7: Prune old logs (keep last 7 days) ──────────────────────
+    # ── Step 7: Prune old logs (keep last 30 days) ─────────────────────
     logs_deleted = 0
     try:
-        log_cutoff = (now_et - timedelta(days=7)).astimezone(ZoneInfo("UTC")).isoformat()
+        log_cutoff = (now_et - timedelta(days=30)).astimezone(ZoneInfo("UTC")).isoformat()
         log_result = (
             supabase.table("autopilot_logs")
             .delete()
@@ -213,9 +213,25 @@ def run_cleanup(target_date: str | None = None) -> None:
         )
         logs_deleted = len(log_result.data) if log_result.data else 0
         if logs_deleted > 0:
-            logger.info(f"  Deleted {logs_deleted} old log entries (>7 days)")
+            logger.info(f"  Deleted {logs_deleted} old log entries (>30 days)")
     except Exception as e:
         logger.error(f"Failed to prune old logs: {e}")
+
+    # ── Step 8: Prune old signals (keep last 30 days) ────────────────
+    old_signals_deleted = 0
+    try:
+        signal_cutoff = (now_et - timedelta(days=30)).astimezone(ZoneInfo("UTC")).isoformat()
+        sig_result = (
+            supabase.table("autopilot_signals")
+            .delete()
+            .lt("created_at", signal_cutoff)
+            .execute()
+        )
+        old_signals_deleted = len(sig_result.data) if sig_result.data else 0
+        if old_signals_deleted > 0:
+            logger.info(f"  Deleted {old_signals_deleted} old signals (>30 days)")
+    except Exception as e:
+        logger.error(f"Failed to prune old signals: {e}")
 
     # ── Summary ──────────────────────────────────────────────────────
     logger.info("Cleanup complete:")
@@ -225,6 +241,7 @@ def run_cleanup(target_date: str | None = None) -> None:
     logger.info(f"  Signals deleted: {deleted}")
     logger.info(f"  Old positions deleted: {old_positions_deleted}")
     logger.info(f"  Old logs pruned: {logs_deleted}")
+    logger.info(f"  Old signals pruned: {old_signals_deleted}")
 
 
 def main():

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { supabase } from "@/lib/supabase";
 import { hasKalshiKeys } from "@/lib/kalshi-crypto";
 import { fetchPositions } from "@/lib/kalshi-api";
@@ -104,6 +104,8 @@ export default function AutopilotDashboard({ userId }: Props) {
   const [showSettings, setShowSettings] = useState(false);
   const [activityLog, setActivityLog] = useState<AutopilotLog[]>([]);
   const [showLog, setShowLog] = useState(false);
+  const [showTrades, setShowTrades] = useState(false);
+  const [backendStatus, setBackendStatus] = useState<"live" | "stale" | "offline">("offline");
 
   // Kalshi positions — source of truth, polled every 5s
   const [kalshiPositions, setKalshiPositions] = useState<PositionItem[]>([]);
@@ -383,6 +385,35 @@ export default function AutopilotDashboard({ userId }: Props) {
     };
 
     const interval = setInterval(pollSignals, 15_000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // ── Poll backend heartbeat every 10s ──────────────────────────────
+  useEffect(() => {
+    const checkHeartbeat = async () => {
+      try {
+        const { data } = await supabase
+          .from("autopilot_heartbeat")
+          .select("last_heartbeat")
+          .eq("id", 1)
+          .single();
+
+        if (data?.last_heartbeat) {
+          const ageSec =
+            (Date.now() - new Date(data.last_heartbeat).getTime()) / 1000;
+          if (ageSec < 60) setBackendStatus("live");
+          else if (ageSec < 120) setBackendStatus("stale");
+          else setBackendStatus("offline");
+        } else {
+          setBackendStatus("offline");
+        }
+      } catch {
+        setBackendStatus("offline");
+      }
+    };
+
+    checkHeartbeat();
+    const interval = setInterval(checkHeartbeat, 10_000);
     return () => clearInterval(interval);
   }, []);
 
@@ -698,6 +729,50 @@ export default function AutopilotDashboard({ userId }: Props) {
     }
   };
 
+  // ── P&L + trade history ───────────────────────────────────────────
+
+  const tradeHistory = useMemo(
+    () => activityLog.filter((l) => l.level === "TRADE"),
+    [activityLog]
+  );
+
+  const pnlSummary = useMemo(() => {
+    let buys = 0;
+    let sells = 0;
+    let totalPnl = 0;
+    let hasPnl = false;
+
+    for (const log of tradeHistory) {
+      if (log.message.includes("BUY FIRED")) {
+        buys++;
+      } else if (log.message.includes("SELL FIRED")) {
+        sells++;
+        const pnl = log.metadata?.pnl;
+        if (typeof pnl === "number") {
+          totalPnl += pnl;
+          hasPnl = true;
+        } else {
+          // Fallback: parse from message "P&L: +$1.23" or "P&L: -$0.50"
+          const match = log.message.match(/P&L:\s*([+-]?\$[\d.]+)/);
+          if (match) {
+            totalPnl += parseFloat(match[1].replace("$", ""));
+            hasPnl = true;
+          }
+        }
+      }
+    }
+
+    return { buys, sells, totalPnl, hasPnl };
+  }, [tradeHistory]);
+
+  const formatTradeTime = (iso: string): string =>
+    new Intl.DateTimeFormat("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+      timeZoneName: "short",
+    }).format(new Date(iso));
+
   return (
     <div className="min-h-screen bg-black text-white p-4 md:p-6 font-mono">
       {/* Header */}
@@ -711,6 +786,34 @@ export default function AutopilotDashboard({ userId }: Props) {
           </div>
 
           <div className="flex items-center gap-3">
+            {/* Backend heartbeat */}
+            <div className="flex items-center gap-1.5 text-xs">
+              <div
+                className={`w-1.5 h-1.5 rounded-full ${
+                  backendStatus === "live"
+                    ? "bg-green-500 animate-pulse"
+                    : backendStatus === "stale"
+                      ? "bg-yellow-500"
+                      : "bg-neutral-700"
+                }`}
+              />
+              <span
+                className={
+                  backendStatus === "live"
+                    ? "text-green-400"
+                    : backendStatus === "stale"
+                      ? "text-yellow-400"
+                      : "text-neutral-600"
+                }
+              >
+                {backendStatus === "live"
+                  ? "Backend"
+                  : backendStatus === "stale"
+                    ? "Backend stale"
+                    : "Backend off"}
+              </span>
+            </div>
+
             {/* System status */}
             <div className="flex items-center gap-2 text-xs">
               <div
@@ -739,6 +842,18 @@ export default function AutopilotDashboard({ userId }: Props) {
               }`}
             >
               Log{activityLog.length > 0 ? ` (${activityLog.length})` : ""}
+            </button>
+
+            {/* P&L toggle */}
+            <button
+              onClick={() => setShowTrades(!showTrades)}
+              className={`text-xs border rounded px-2 py-1 ${
+                tradeHistory.length > 0
+                  ? "text-green-400 border-green-800 hover:text-green-300"
+                  : "text-neutral-500 border-neutral-800 hover:text-neutral-300"
+              }`}
+            >
+              P&L{tradeHistory.length > 0 ? ` (${tradeHistory.length})` : ""}
             </button>
 
             {/* Settings toggle */}
@@ -828,6 +943,76 @@ export default function AutopilotDashboard({ userId }: Props) {
                     </span>
                   </div>
                 ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* P&L + Trade History panel */}
+        {showTrades && (
+          <div className="mt-3 p-4 rounded-lg border border-neutral-800 bg-neutral-900/60">
+            {/* Realized P&L summary */}
+            <div className="flex items-center gap-6 mb-3 text-xs">
+              <h3 className="text-sm font-medium">P&L</h3>
+              {pnlSummary.buys > 0 && (
+                <span className="text-green-400">
+                  {pnlSummary.buys} buy{pnlSummary.buys !== 1 ? "s" : ""}
+                </span>
+              )}
+              {pnlSummary.sells > 0 && (
+                <span className="text-blue-400">
+                  {pnlSummary.sells} sell{pnlSummary.sells !== 1 ? "s" : ""}
+                </span>
+              )}
+              {pnlSummary.hasPnl && (
+                <span
+                  className={
+                    pnlSummary.totalPnl >= 0
+                      ? "text-green-400 font-bold"
+                      : "text-red-400 font-bold"
+                  }
+                >
+                  Realized: {pnlSummary.totalPnl >= 0 ? "+" : ""}$
+                  {Math.abs(pnlSummary.totalPnl).toFixed(2)}
+                </span>
+              )}
+            </div>
+
+            {/* Trade history table */}
+            {tradeHistory.length === 0 ? (
+              <p className="text-xs text-neutral-600">
+                No trades today.
+              </p>
+            ) : (
+              <div className="max-h-80 overflow-y-auto space-y-0.5">
+                {tradeHistory.map((entry) => {
+                  const colonIdx = entry.message.indexOf(":");
+                  const gameLabel =
+                    colonIdx > 0
+                      ? entry.message.substring(0, colonIdx)
+                      : "";
+                  const action =
+                    colonIdx > 0
+                      ? entry.message.substring(colonIdx + 2)
+                      : entry.message;
+
+                  return (
+                    <div
+                      key={entry.id}
+                      className="flex items-baseline gap-3 text-xs font-mono py-0.5"
+                    >
+                      <span className="text-neutral-600 shrink-0 w-28">
+                        {formatTradeTime(entry.timestamp)}
+                      </span>
+                      <span className="text-neutral-400 shrink-0 w-24 truncate">
+                        {gameLabel}
+                      </span>
+                      <span className="text-green-400 flex-1 truncate">
+                        {action}
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>

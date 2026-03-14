@@ -47,6 +47,9 @@ NO_GAMES_TIMEOUT = 900  # 15 minutes
 # Minimum time between signals for the same game (seconds)
 SIGNAL_COOLDOWN = 15.0
 
+# How often to write heartbeat to Supabase (seconds)
+HEARTBEAT_INTERVAL = 30.0
+
 
 class Orchestrator:
     """Main live loop. Manages all active games concurrently."""
@@ -62,6 +65,7 @@ class Orchestrator:
         self.position_manager = PositionManager()
         self.running = False
         self.last_active_time = time.monotonic()
+        self.last_heartbeat_time = 0.0
 
     async def run(self) -> None:
         """Main loop. Runs until stopped or no games are active."""
@@ -78,6 +82,9 @@ class Orchestrator:
                         self.last_active_time = time.monotonic()
                 except Exception as e:
                     logger.error(f"Tick error: {e}", exc_info=True)
+
+                # Write heartbeat (throttled to ~30s intervals)
+                self._maybe_write_heartbeat()
 
                 # Check no-games timeout
                 idle_time = time.monotonic() - self.last_active_time
@@ -360,6 +367,21 @@ class Orchestrator:
             supabase.table("autopilot_signals").insert(record).execute()
         except Exception as e:
             logger.error(f"Failed to write signal: {e}")
+
+    def _maybe_write_heartbeat(self) -> None:
+        """Write heartbeat to Supabase, throttled to ~30s intervals."""
+        now = time.monotonic()
+        if now - self.last_heartbeat_time < HEARTBEAT_INTERVAL:
+            return
+
+        try:
+            supabase.table("autopilot_heartbeat").upsert(
+                {"id": 1, "last_heartbeat": datetime.now(timezone.utc).isoformat()},
+                on_conflict="id",
+            ).execute()
+            self.last_heartbeat_time = now
+        except Exception as e:
+            logger.warning(f"Heartbeat write failed: {e}")
 
     def stop(self) -> None:
         """Signal the loop to stop."""
