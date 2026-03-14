@@ -236,9 +236,6 @@ export default function AutopilotDashboard({ userId }: Props) {
       try {
         const positions = await fetchPositions();
         setKalshiPositions(positions);
-
-        // Diff positions for change logging
-        positionManagerRef.current?.diffPositions(positions, dbPositions);
       } catch {
         // Silently fail — will retry in 5s
       }
@@ -247,7 +244,7 @@ export default function AutopilotDashboard({ userId }: Props) {
     poll();
     const interval = setInterval(poll, 5_000);
     return () => clearInterval(interval);
-  }, [dbPositions]);
+  }, []);
 
   // ── Poll DB positions (minimal — just for entry_price + sell_signal) ──
 
@@ -598,10 +595,10 @@ export default function AutopilotDashboard({ userId }: Props) {
     [dbPositions]
   );
 
-  /** Find Kalshi position for a game by matching ticker prefix to DB position. */
+  /** Find Kalshi position for a game by matching ticker to game teams. */
   const getKalshiPositionForGame = useCallback(
     (game: AutopilotGame): PositionItem | null => {
-      // First find the DB position to get the ticker
+      // First try: match via DB position ticker
       const dbPos = getDbPositionForGame(game);
       if (dbPos?.ticker) {
         const eventPrefix = dbPos.ticker.substring(0, dbPos.ticker.lastIndexOf("-"));
@@ -611,9 +608,28 @@ export default function AutopilotDashboard({ userId }: Props) {
         if (match) return match;
       }
 
-      // Fallback: check all Kalshi positions for KXNBA tickers matching game teams
-      // (This handles cases where DB position doesn't exist yet but Kalshi has it)
-      return null;
+      // Fallback: check via signal tickers (from the game's latest signal)
+      if (game.latestSignal) {
+        const homeTicker = game.latestSignal.kalshi_ticker_home;
+        const awayTicker = game.latestSignal.kalshi_ticker_away;
+        for (const ticker of [homeTicker, awayTicker]) {
+          if (!ticker) continue;
+          const eventPrefix = ticker.substring(0, ticker.lastIndexOf("-"));
+          const match = kalshiPositions.find(
+            (p) => p.position > 0 && p.ticker.startsWith(eventPrefix)
+          );
+          if (match) return match;
+        }
+      }
+
+      // Last resort: match by team abbreviation in ticker
+      const homeAbbr = game.homeTeam;
+      const awayAbbr = game.awayTeam;
+      const match = kalshiPositions.find(
+        (p) => p.position > 0 && p.ticker.startsWith("KXNBA") &&
+          (p.ticker.includes(homeAbbr) || p.ticker.includes(awayAbbr))
+      );
+      return match || null;
     },
     [kalshiPositions, getDbPositionForGame]
   );

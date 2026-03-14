@@ -7,8 +7,6 @@
  * Exit:   backend sets sell_signal → fire sell order → verify via Kalshi after 30s
  * Manual: user clicks EXIT → same as above
  *
- * Position changes are detected by diffing Kalshi positions every 5s
- * and logged once per change.
  */
 
 import { supabase } from "@/lib/supabase";
@@ -22,7 +20,6 @@ import type {
   AutopilotSignal,
   AutopilotPosition,
   AutopilotSettingsV2,
-  PositionItem,
 } from "@/lib/types";
 
 export type LogCallback = (
@@ -32,11 +29,6 @@ export type LogCallback = (
   metadata?: Record<string, unknown>
 ) => void;
 
-/** Tracked position state for diff-based change logging. */
-interface TrackedPosition {
-  ticker: string;
-  quantity: number;
-}
 
 export class AutopilotPositionManager {
   private userId: string;
@@ -44,9 +36,6 @@ export class AutopilotPositionManager {
 
   /** Events currently being processed (buy or sell in-flight). Prevents double-firing. */
   private busyEvents = new Set<string>();
-
-  /** Last-known Kalshi positions for diff-based change logging. Keyed by ticker. */
-  private lastKnownPositions = new Map<string, TrackedPosition>();
 
   /** Signals we've already acted on (by signal ID). Prevents re-buying on poll. */
   private processedSignals = new Set<number>();
@@ -339,87 +328,6 @@ export class AutopilotPositionManager {
     } finally {
       this.busyEvents.delete(eventPrefix);
     }
-  }
-
-  // ── Position change detection (diff-based logging) ────────────────
-
-  /**
-   * Called every 5s with fresh Kalshi positions. Diffs against last-known
-   * state and logs changes exactly once.
-   *
-   * @param kalshiPositions - fresh positions from fetchPositions()
-   * @param dbPositions - current DB positions (for game label lookup)
-   */
-  diffPositions(
-    kalshiPositions: PositionItem[],
-    dbPositions: Map<string, AutopilotPosition>,
-  ): void {
-    const currentMap = new Map<string, TrackedPosition>();
-    for (const p of kalshiPositions) {
-      if (p.position > 0 && p.ticker.startsWith("KX")) {
-        currentMap.set(p.ticker, { ticker: p.ticker, quantity: p.position });
-      }
-    }
-
-    // Detect new positions or quantity changes
-    for (const [ticker, current] of currentMap) {
-      const prev = this.lastKnownPositions.get(ticker);
-      if (!prev) {
-        // New position appeared
-        const gameLabel = this.getGameLabelForTicker(ticker, dbPositions);
-        const side = this.getSideForTicker(ticker, dbPositions);
-        const entryPrice = this.getEntryPriceForTicker(ticker, dbPositions);
-        const priceStr = entryPrice ? ` @${(entryPrice * 100).toFixed(0)}c` : "";
-        this.onLog("TRADE", `POSITION ${gameLabel} ${side} x${current.quantity}${priceStr}`, undefined);
-        this.writeLog("TRADE", `POSITION ${gameLabel} ${side} x${current.quantity}${priceStr}`, undefined);
-      } else if (prev.quantity !== current.quantity) {
-        // Quantity changed
-        const gameLabel = this.getGameLabelForTicker(ticker, dbPositions);
-        const side = this.getSideForTicker(ticker, dbPositions);
-        this.onLog("TRADE", `POSITION ${gameLabel} ${side} x${current.quantity} (was x${prev.quantity})`, undefined);
-        this.writeLog("TRADE", `POSITION ${gameLabel} ${side} x${current.quantity} (was x${prev.quantity})`, undefined);
-      }
-    }
-
-    // Detect positions that disappeared
-    for (const [ticker, prev] of this.lastKnownPositions) {
-      if (!currentMap.has(ticker)) {
-        const gameLabel = this.getGameLabelForTicker(ticker, dbPositions);
-        this.onLog("TRADE", `POSITION ${gameLabel} N/A`, undefined);
-        this.writeLog("TRADE", `POSITION ${gameLabel} N/A`, undefined);
-      }
-    }
-
-    this.lastKnownPositions = currentMap;
-  }
-
-  private getGameLabelForTicker(ticker: string, dbPositions: Map<string, AutopilotPosition>): string {
-    // Try to find game label from DB positions
-    for (const pos of dbPositions.values()) {
-      if (pos.ticker === ticker) {
-        return `${pos.away_team}@${pos.home_team}`;
-      }
-    }
-    // Fallback: use ticker
-    return ticker;
-  }
-
-  private getSideForTicker(ticker: string, dbPositions: Map<string, AutopilotPosition>): string {
-    for (const pos of dbPositions.values()) {
-      if (pos.ticker === ticker) {
-        return pos.side;
-      }
-    }
-    return "?";
-  }
-
-  private getEntryPriceForTicker(ticker: string, dbPositions: Map<string, AutopilotPosition>): number | null {
-    for (const pos of dbPositions.values()) {
-      if (pos.ticker === ticker) {
-        return pos.entry_price;
-      }
-    }
-    return null;
   }
 
   // ── Helpers ────────────────────────────────────────────────────────
