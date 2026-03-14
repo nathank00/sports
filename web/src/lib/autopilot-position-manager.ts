@@ -218,8 +218,12 @@ export class AutopilotPositionManager {
 
   /**
    * Manual exit — user clicked EXIT button on a game card.
+   * Bypasses the recentSellFired cooldown (that's for AUTO sells only).
    */
   async manualExit(position: AutopilotPosition): Promise<void> {
+    const gameLabel = `${position.away_team}@${position.home_team}`;
+    this.onLog("TRADE", `${gameLabel}: MANUAL EXIT requested`, undefined);
+
     await this.fireSell(position, "MANUAL");
   }
 
@@ -229,11 +233,17 @@ export class AutopilotPositionManager {
     const eventPrefix = ticker.substring(0, ticker.lastIndexOf("-"));
 
     // Skip if already processing this game
-    if (this.busyEvents.has(eventPrefix)) return;
+    if (this.busyEvents.has(eventPrefix)) {
+      this.onLog("INFO", `${gameLabel}: Sell already in progress — waiting`, undefined);
+      return;
+    }
 
     // Skip if we recently fired a sell for this event (within 45s)
-    const lastSell = this.recentSellFired.get(event_id);
-    if (lastSell && Date.now() - lastSell < 45_000) return;
+    // Manual exits bypass this cooldown — only AUTO sells are throttled
+    if (reason === "AUTO") {
+      const lastSell = this.recentSellFired.get(event_id);
+      if (lastSell && Date.now() - lastSell < 45_000) return;
+    }
 
     // Get current quantity + entry price from Kalshi
     let quantity: number;
@@ -283,23 +293,29 @@ export class AutopilotPositionManager {
     }
 
     try {
+      // Undercut bid by 2c for faster fills — protects against bid dropping
+      // between fetch and order placement. Limit order still fills at best
+      // available bid (usually the price we fetched), but won't expire if
+      // bid drops 1-2c.
+      const sellPrice = Math.max(bidPrice - 0.02, 0.01);
+
       // Use Kalshi-derived entry price for P&L (source of truth)
-      const pnlPerContract = bidPrice - kalshiEntryPrice;
+      const pnlPerContract = sellPrice - kalshiEntryPrice;
       const totalPnl = pnlPerContract * quantity;
       const pnlStr = `${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(2)}`;
 
-      const result = await sellOrder(ticker, "yes", quantity, bidPrice.toFixed(2));
+      const result = await sellOrder(ticker, "yes", quantity, sellPrice.toFixed(2));
       this.onLog(
         "TRADE",
-        `${gameLabel}: SELL FIRED — x${quantity} @ ${(bidPrice * 100).toFixed(0)}c (${reason}${reason === "AUTO" ? "" : ""}, P&L: ${pnlStr})`,
+        `${gameLabel}: SELL FIRED — x${quantity} @ ${(bidPrice * 100).toFixed(0)}c limit ${(sellPrice * 100).toFixed(0)}c (${reason}, P&L: ${pnlStr})`,
         undefined,
-        { orderId: result.orderId, ticker, quantity, bidPrice, reason }
+        { orderId: result.orderId, ticker, quantity, bidPrice, sellPrice, reason }
       );
       this.writeLog(
         "TRADE",
-        `${gameLabel}: SELL FIRED — x${quantity} @ ${(bidPrice * 100).toFixed(0)}c (${reason}, P&L: ${pnlStr})`,
+        `${gameLabel}: SELL FIRED — x${quantity} @ ${(bidPrice * 100).toFixed(0)}c limit ${(sellPrice * 100).toFixed(0)}c (${reason}, P&L: ${pnlStr})`,
         undefined,
-        { orderId: result.orderId, ticker, quantity, bidPrice, reason, pnl: totalPnl }
+        { orderId: result.orderId, ticker, quantity, bidPrice, sellPrice, reason, pnl: totalPnl }
       );
 
       // Clear sell_signal immediately

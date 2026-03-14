@@ -179,30 +179,6 @@ export interface AutopilotGame {
   kalshiAwayPrice?: number | null;
 }
 
-/** A trade executed by the frontend auto-execution engine. */
-export interface AutopilotExecution {
-  signalId: number;
-  timestamp: string;
-  ticker: string;
-  side: string;
-  contracts: number;
-  price: number;
-  orderId: string | null;
-  status: string;
-  fillCount: number | null;
-}
-
-/** Autopilot settings (persisted in localStorage — legacy, migrating to Supabase). */
-export interface AutopilotSettings {
-  autoExecuteEnabled: boolean;
-  edgeThreshold: number;
-  sizingMode: SizingMode;
-  betAmount: number;
-  cooldownSeconds: number;
-  maxContractsPerBet: number;
-  maxExposurePerGame: number;
-}
-
 // ── Autopilot v2 types (simplified — Kalshi is source of truth) ───────
 
 /**
@@ -231,9 +207,7 @@ export interface AutopilotSettingsV2 {
   stop_loss: number;
   sizing_mode: SizingMode;
   bet_amount: number;
-  cooldown_seconds: number;
   max_contracts_per_bet: number;
-  max_exposure_per_game: number;
   updated_at: string;
 }
 

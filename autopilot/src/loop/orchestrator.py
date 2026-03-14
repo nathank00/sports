@@ -22,7 +22,7 @@ from autopilot.src.trading.decision import (
     evaluate_signal,
     ABBR_TO_TEAM,
 )
-from autopilot.src.trading.position_manager import PositionManager, UserSettings
+from autopilot.src.trading.position_manager import PositionManager
 from autopilot.src.ingest.espn_live import (
     fetch_live_scoreboard,
     fetch_live_game_detail,
@@ -31,7 +31,7 @@ from autopilot.src.ingest.nba_api_live import (
     fetch_cdn_scoreboard,
     fetch_cdn_boxscore,
 )
-from autopilot.src.db import supabase
+from autopilot.src.db import supabase, write_log
 
 logger = logging.getLogger(__name__)
 
@@ -110,12 +110,8 @@ class Orchestrator:
         if not active:
             return False
 
-        # 2. Clear user cache and expire stale intents once per tick
+        # 2. Clear user cache once per tick
         self.position_manager.clear_user_cache()
-        try:
-            self.position_manager.expire_stale_intents()
-        except Exception as e:
-            logger.error(f"Failed to expire stale intents: {e}")
 
         # 3. Process each active game
         tasks = [self._process_game(session, game) for game in active]
@@ -267,61 +263,24 @@ class Orchestrator:
             f"edge={edge_str} | {action}{reason_str}"
         )
 
-        # Evaluate trade intents for each active user
-        if signal.recommended_action != "NO_TRADE":
+        # Write BLOCKED log for NO_TRADE signals with a block reason (no-trade window, blowout)
+        game_label = f"{away_team}@{home_team}"
+        if (
+            signal.recommended_action == "NO_TRADE"
+            and getattr(signal, "reason_code", None)
+            and signal.reason_code.startswith("BLOCKED_")
+        ):
             active_users = self.position_manager.get_active_users()
-            # Build event_id from the signal's recommended ticker
-            # e.g., "KXNBAGAME-05MAR26INDBOS-IND" → event = "KXNBAGAME-05MAR26INDBOS"
-            event_id = None
-            if signal.recommended_ticker:
-                parts = signal.recommended_ticker.rsplit("-", 1)
-                if len(parts) == 2:
-                    event_id = parts[0]
-
-            if not active_users:
-                logger.warning(
-                    f"  {signal.recommended_action} signal but no active users found"
-                )
-            elif not event_id:
-                logger.warning(
-                    f"  {signal.recommended_action} signal but could not parse "
-                    f"event_id from ticker: {signal.recommended_ticker}"
-                )
-
-            if event_id and active_users:
-                game_id = tracker.espn_game_id or tracker.nba_game_id
-                for user_row in active_users:
-                    try:
-                        settings = UserSettings.from_row(user_row)
-                        self.position_manager.process_signal(
-                            user_settings=settings,
-                            signal=signal,
-                            game_id=game_id,
-                            event_id=event_id,
-                            home_team=home_team,
-                            away_team=away_team,
-                            period=period,
-                            seconds_remaining=seconds_remaining,
-                            home_score=home_score,
-                            away_score=away_score,
-                        )
-                    except Exception as e:
-                        logger.error(
-                            f"Position manager error for user "
-                            f"{user_row.get('user_id', '?')[:8]}...: {e}",
-                            exc_info=True,
-                        )
-                        # Also write to DB so it's visible in the UI
-                        from autopilot.src.db import write_log
-                        try:
-                            write_log(
-                                user_id=user_row.get("user_id", "unknown"),
-                                level="ERROR",
-                                message=f"Position manager exception: {e}",
-                                event_id=event_id,
-                            )
-                        except Exception:
-                            pass
+            for user_row in active_users:
+                try:
+                    write_log(
+                        user_id=user_row["user_id"],
+                        level="BLOCKED",
+                        message=f"{game_label}: {signal.reason}",
+                        metadata={"reason_code": signal.reason_code},
+                    )
+                except Exception:
+                    pass
 
         # Monitor existing positions for auto-exit (TP/SL/late-game)
         if tracker.kalshi_markets:
@@ -400,18 +359,7 @@ class Orchestrator:
         try:
             supabase.table("autopilot_signals").insert(record).execute()
         except Exception as e:
-            err_str = str(e)
-            # If new columns don't exist yet, retry without them
-            if "blended_home_win_prob" in err_str or "reason_code" in err_str or "pregame_spread" in err_str:
-                record.pop("blended_home_win_prob", None)
-                record.pop("reason_code", None)
-                record.pop("pregame_spread", None)
-                try:
-                    supabase.table("autopilot_signals").insert(record).execute()
-                except Exception as e2:
-                    logger.error(f"Failed to write signal (retry): {e2}")
-            else:
-                logger.error(f"Failed to write signal: {e}")
+            logger.error(f"Failed to write signal: {e}")
 
     def stop(self) -> None:
         """Signal the loop to stop."""

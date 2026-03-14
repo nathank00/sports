@@ -184,61 +184,22 @@ def run_cleanup(target_date: str | None = None) -> None:
 
     logger.info(f"  Deleted {deleted} old signals")
 
-    # ── Step 6: Reset stale positions ─────────────────────────────────
-    stale_positions_reset = 0
+    # ── Step 6: Delete old position rows ─────────────────────────────
+    # Positions from previous days are orphaned (game over, market settled).
+    # Frontend creates rows; cleanup deletes them the next morning.
+    old_positions_deleted = 0
     try:
-        # Reset PENDING_ENTRY or EXITING positions from previous days to FLAT
-        stale_result = (
+        pos_result = (
             supabase.table("autopilot_positions")
-            .update({
-                "state": "FLAT",
-                "side": None,
-                "ticker": None,
-                "intent_price": None,
-                "intent_contracts": None,
-                "intent_side": None,
-                "intent_created_at": None,
-                "updated_at": datetime.now(ZoneInfo("UTC")).isoformat(),
-            })
-            .lt("updated_at", cutoff_utc)
-            .in_("state", ["PENDING_ENTRY", "EXITING"])
+            .delete()
+            .lt("created_at", cutoff_utc)
             .execute()
         )
-        stale_positions_reset = len(stale_result.data) if stale_result.data else 0
-        if stale_positions_reset > 0:
-            logger.info(f"  Reset {stale_positions_reset} stale PENDING_ENTRY/EXITING positions to FLAT")
+        old_positions_deleted = len(pos_result.data) if pos_result.data else 0
+        if old_positions_deleted > 0:
+            logger.info(f"  Deleted {old_positions_deleted} old position rows")
     except Exception as e:
-        logger.error(f"Failed to reset stale positions: {e}")
-
-    # Reset LOCKED positions older than the cutoff back to FLAT (ready for new game day)
-    locked_reset = 0
-    try:
-        locked_result = (
-            supabase.table("autopilot_positions")
-            .update({
-                "state": "FLAT",
-                "side": None,
-                "ticker": None,
-                "entry_price": None,
-                "quantity": None,
-                "entry_timestamp": None,
-                "take_profit_price": None,
-                "stop_loss_price": None,
-                "exit_price": None,
-                "exit_timestamp": None,
-                "realized_pnl": None,
-                "cooldown_until": None,
-                "updated_at": datetime.now(ZoneInfo("UTC")).isoformat(),
-            })
-            .lt("updated_at", cutoff_utc)
-            .eq("state", "LOCKED")
-            .execute()
-        )
-        locked_reset = len(locked_result.data) if locked_result.data else 0
-        if locked_reset > 0:
-            logger.info(f"  Reset {locked_reset} LOCKED positions to FLAT (new game day)")
-    except Exception as e:
-        logger.error(f"Failed to reset locked positions: {e}")
+        logger.error(f"Failed to delete old positions: {e}")
 
     # ── Step 7: Prune old logs (keep last 7 days) ──────────────────────
     logs_deleted = 0
@@ -262,8 +223,7 @@ def run_cleanup(target_date: str | None = None) -> None:
     logger.info(f"  Games processed: {len(matched_games)}")
     logger.info(f"  Training snapshots upserted: {len(deduped) if snapshots else 0}")
     logger.info(f"  Signals deleted: {deleted}")
-    logger.info(f"  Stale positions reset: {stale_positions_reset}")
-    logger.info(f"  Locked positions reset: {locked_reset}")
+    logger.info(f"  Old positions deleted: {old_positions_deleted}")
     logger.info(f"  Old logs pruned: {logs_deleted}")
 
 

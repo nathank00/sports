@@ -3,13 +3,14 @@
 # ─────────────────────────────────────────────────────────────
 # Long-running live prediction loop for NBA games.
 #
-# Scheduled triggers:
-#   1. 6:30 PM ET (23:30 UTC) — covers evening games
-#   2. 12:00 PM ET (17:00 UTC) — covers afternoon games
+# Triggers every 15 min during the NBA game window:
+#   12:00 PM – 11:45 PM ET  (17:00–04:45 UTC)
 #
-# The loop auto-terminates after 15 min with no active games.
-# timeout-minutes: 360 (6 hours) allows it to run for a full
-# slate of games.
+# Safe to trigger frequently because:
+#   - cancel-in-progress: false → won't kill a running instance
+#   - GitHub queues at most 1 pending run per concurrency group
+#   - The loop auto-exits after 15 min with no active games
+#   - timeout-minutes: 360 (6 hours) covers a full game slate
 #
 # To ENABLE:  Go to Actions tab → "Autopilot" → Enable workflow
 # To DISABLE: Go to Actions tab → "Autopilot" → "..." → Disable workflow
@@ -19,34 +20,23 @@ name: Autopilot
 
 on:
   schedule:
-    # 12:00 PM ET (17:00 UTC) — afternoon games
-    - cron: "0 17 * * *"
-    # 6:30 PM ET (23:30 UTC) — evening games
-    - cron: "30 23 * * *"
+    # Every 15 min, 5 PM – 11:45 PM UTC (12 PM – 6:45 PM ET)
+    - cron: "*/15 17-23 * * *"
+    # Every 15 min, 12 AM – 4:45 AM UTC (7 PM – 11:45 PM ET)
+    - cron: "*/15 0-4 * * *"
 
   # Allow manual trigger from the Actions tab
   workflow_dispatch:
-    inputs:
-      min_edge:
-        description: "Minimum edge % to recommend trades"
-        required: false
-        default: "2"
-        type: string
-      min_time:
-        description: "Minimum seconds remaining to recommend trades"
-        required: false
-        default: "120"
-        type: string
 
-# Only one autopilot run at a time (cancel older if new one starts)
+# Only one autopilot run at a time.
+# cancel-in-progress: false → new triggers queue (max 1 pending)
+# instead of killing the running instance mid-game.
 concurrency:
   group: autopilot
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
-  # ─── Scheduled Live Loop ─────────────────────────────────────
-  live:
-    if: github.event_name == 'schedule'
+  run:
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
@@ -68,28 +58,3 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: python autopilot/run_live.py
-
-  # ─── Manual Trigger ─────────────────────────────────────────
-  manual:
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 360
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: "pip"
-          cache-dependency-path: autopilot/requirements.txt
-
-      - name: Install dependencies
-        run: pip install -r autopilot/requirements.txt
-
-      - name: Run autopilot live loop
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-        run: python autopilot/run_live.py --min-edge ${{ inputs.min_edge }} --min-time ${{ inputs.min_time }}
