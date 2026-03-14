@@ -51,7 +51,7 @@ class TradingConfig:
     """Trading parameters for signal evaluation."""
 
     min_edge_pct: float = 2.0             # minimum edge to recommend a trade (percentage points)
-    min_seconds_remaining: float = 240.0  # don't trade in final 4 minutes of Q4/OT
+    min_seconds_remaining: float = 300.0  # don't trade in final 5 minutes of Q4/OT
     blowout_margin: int = 15              # don't trade if score margin > this in Q4+
     friction_cents: float = 2.0           # Kalshi fee per contract (cents), subtracted from edge
     underdog_prob_threshold: float = 0.20 # below this model prob, require 2x edge threshold
@@ -136,7 +136,7 @@ def evaluate_signal(
 
     model_away_prob = 1.0 - model_home_prob
 
-    # ── Filter 1: No-trade window (4 minutes in Q4/OT) ──
+    # ── Filter 1: No-trade window (5 minutes in Q4/OT) ──
     if period >= 4 and seconds_remaining < config.min_seconds_remaining:
         period_label = "OT" if period > 4 else "Q4"
         return TradeSignal(

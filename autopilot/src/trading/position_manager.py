@@ -36,7 +36,7 @@ from autopilot.src.trading.decision import (
 logger = logging.getLogger(__name__)
 
 # No-trade window — must match decision.py TradingConfig default
-NO_TRADE_SECONDS = 240.0
+NO_TRADE_SECONDS = 300.0
 
 
 @dataclass
@@ -136,7 +136,7 @@ class PositionManager:
             write_log(
                 user_id=user_id,
                 level="BLOCKED",
-                message=block_message,
+                message=f"{game_label}: {block_message}",
                 event_id=event_id,
                 metadata={"reason_code": reason_code},
             )
@@ -304,10 +304,10 @@ class PositionManager:
         """Return (block_message, reason_code) or None if all guards pass.
 
         Guards (entry blockers only, never force exit):
-        - Last 4 minutes of Q4/OT (period >= 4 and seconds_remaining < 240)
+        - Last 5 minutes of Q4/OT (period >= 4 and seconds_remaining < 300)
         - Blowout (margin > 15 in Q4+)
         """
-        # No-trade window: 4 minutes
+        # No-trade window: 5 minutes
         if period >= 4 and seconds_remaining < NO_TRADE_SECONDS:
             period_label = "OT" if period > 4 else "Q4"
             return (

@@ -50,9 +50,12 @@ export class AutopilotPositionManager {
 
   // ── Entry: fired by dashboard when new signal arrives ─────────────
 
+  /** No-trade window — last 5 minutes of Q4/OT. Must match backend. */
+  private static readonly NO_TRADE_SECONDS = 300;
+
   /**
    * Evaluate a signal for entry. Called by the dashboard on each new signal.
-   * Checks edge threshold, existing positions, then fires a buy if qualified.
+   * Checks no-trade window, edge threshold, existing positions, then fires a buy if qualified.
    */
   async evaluateSignal(
     signal: AutopilotSignal,
@@ -84,15 +87,23 @@ export class AutopilotPositionManager {
     const side = signal.recommended_action === "BUY_HOME" ? "HOME" : "AWAY";
     const gameLabel = `${signal.away_team}@${signal.home_team}`;
 
+    // No-trade window: last 5 minutes of Q4 or OT — skip silently (backend logs BLOCKED)
+    if (signal.period >= 4 && signal.seconds_remaining < AutopilotPositionManager.NO_TRADE_SECONDS) {
+      return;
+    }
+
     // Extract event prefix (e.g., "KXNBAGAME-26MAR14-BOS-MIL" from ticker)
     const eventPrefix = ticker.substring(0, ticker.lastIndexOf("-"));
     if (!eventPrefix) return;
 
     // Skip if already busy with this game
     if (this.busyEvents.has(eventPrefix)) return;
+    // Mark busy IMMEDIATELY to prevent race condition with concurrent signals
+    this.busyEvents.add(eventPrefix);
 
-    // Check Kalshi: do we already own contracts on this game?
+    let orderFired = false;
     try {
+      // Check Kalshi: do we already own contracts on this game?
       const kalshiPositions = await fetchPositions();
       const existing = kalshiPositions.find(
         (p) => p.position > 0 && p.ticker.startsWith(eventPrefix)
@@ -101,37 +112,23 @@ export class AutopilotPositionManager {
         this.onLog("INFO", `${gameLabel}: Already own ${existing.position} contract(s) on ${existing.ticker} — skipping`, undefined);
         return;
       }
-    } catch (e) {
-      const errMsg = e instanceof Error ? e.message : String(e);
-      this.onLog("INFO", `${gameLabel}: Cannot verify Kalshi positions: ${errMsg} — skipping`, undefined);
-      return;
-    }
 
-    // Fetch fresh ask price
-    let askPrice: number;
-    try {
+      // Fetch fresh ask price
       const markets = await fetchNbaMarkets();
       const market = markets.find((m) => m.ticker === ticker);
       if (!market?.yesAsk) {
         this.onLog("INFO", `${gameLabel}: No ask price for ${ticker} — skipping`, undefined);
         return;
       }
-      askPrice = market.yesAsk;
-    } catch (e) {
-      const errMsg = e instanceof Error ? e.message : String(e);
-      this.onLog("INFO", `${gameLabel}: Cannot fetch markets: ${errMsg} — skipping`, undefined);
-      return;
-    }
+      const askPrice = market.yesAsk;
 
-    // Compute contract count
-    const contracts = this.computeContracts(settings, askPrice);
+      // Compute contract count
+      const contracts = this.computeContracts(settings, askPrice);
 
-    // Mark busy
-    this.busyEvents.add(eventPrefix);
-
-    try {
       // Fire buy order
       const result = await placeOrder(ticker, "yes", contracts, askPrice.toFixed(2), "buy");
+      orderFired = true;
+
       this.onLog(
         "TRADE",
         `${gameLabel}: BUY FIRED — ${side} x${contracts} @ ${(askPrice * 100).toFixed(0)}c (edge ${edge.toFixed(1)}%)`,
@@ -161,7 +158,11 @@ export class AutopilotPositionManager {
       const errMsg = e instanceof Error ? e.message : String(e);
       this.onLog("INFO", `${gameLabel}: BUY FAILED — ${errMsg}`, undefined);
       this.writeLog("INFO", `${gameLabel}: BUY FAILED — ${errMsg}`, undefined);
-      this.busyEvents.delete(eventPrefix);
+    } finally {
+      // Release busyEvents unless we fired an order (verifyBuy releases after 30s)
+      if (!orderFired) {
+        this.busyEvents.delete(eventPrefix);
+      }
     }
   }
 
