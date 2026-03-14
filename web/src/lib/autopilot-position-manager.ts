@@ -87,6 +87,22 @@ export class AutopilotPositionManager {
     const side = signal.recommended_action === "BUY_HOME" ? "HOME" : "AWAY";
     const gameLabel = `${signal.away_team}@${signal.home_team}`;
 
+    // Underdog rule: require 2x edge threshold for low-probability sides (<20% model prob).
+    // Matches backend logic in decision.py (underdog_prob_threshold = 0.20).
+    const UNDERDOG_PROB_THRESHOLD = 0.20;
+    const modelHomeProb = signal.blended_home_win_prob ?? signal.model_home_win_prob;
+    const sideProb = side === "HOME" ? modelHomeProb : 1 - modelHomeProb;
+    if (sideProb < UNDERDOG_PROB_THRESHOLD) {
+      const underdogThreshold = settings.edge_threshold * 2;
+      if (edge < underdogThreshold) {
+        this.onLog(
+          "BLOCKED",
+          `${gameLabel}: Underdog edge ${edge.toFixed(1)}% < 2x threshold ${underdogThreshold.toFixed(1)}%`,
+        );
+        return;
+      }
+    }
+
     // No-trade window: last 5 minutes of Q4 or OT — skip silently (backend logs BLOCKED)
     if (signal.period >= 4 && signal.seconds_remaining < AutopilotPositionManager.NO_TRADE_SECONDS) {
       return;

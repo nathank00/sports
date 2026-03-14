@@ -72,7 +72,7 @@ class Orchestrator:
         self.running = True
         logger.info("Autopilot orchestrator starting...")
         logger.info(f"  Model: {self.model.version}")
-        logger.info(f"  Min edge: {self.config.min_edge_pct}%")
+        logger.info(f"  Friction: {self.config.friction_cents}c per contract")
 
         async with aiohttp.ClientSession() as session:
             while self.running:

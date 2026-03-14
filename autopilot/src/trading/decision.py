@@ -48,13 +48,16 @@ ABBR_TO_TEAM: dict[str, str] = {v: k for k, v in TEAM_ABBR_MAP.items()}
 
 @dataclass
 class TradingConfig:
-    """Trading parameters for signal evaluation."""
+    """Trading parameters for signal evaluation.
 
-    min_edge_pct: float = 2.0             # minimum edge to recommend a trade (percentage points)
+    Edge threshold and underdog rules are user-configured in the frontend.
+    The backend recommends a BUY for any positive edge (after friction) and
+    lets the frontend apply per-user thresholds before firing orders.
+    """
+
     min_seconds_remaining: float = 300.0  # don't trade in final 5 minutes of Q4/OT
     blowout_margin: int = 15              # don't trade if score margin > this in Q4+
     friction_cents: float = 2.0           # Kalshi fee per contract (cents), subtracted from edge
-    underdog_prob_threshold: float = 0.20 # below this model prob, require 2x edge threshold
     max_spread_width: float = 0.10        # block entry if bid-ask spread > this (dollars, 0-1)
 
 
@@ -195,28 +198,22 @@ def evaluate_signal(
     if not away_spread_ok:
         away_edge = None
 
-    # ── Filter 4: Underdog rule — require 2x edge for low-prob sides ──
-    home_threshold = config.min_edge_pct
-    away_threshold = config.min_edge_pct
-
-    if model_home_prob < config.underdog_prob_threshold:
-        home_threshold = config.min_edge_pct * 2
-    if model_away_prob < config.underdog_prob_threshold:
-        away_threshold = config.min_edge_pct * 2
-
-    # ── Pick best qualifying side ──
+    # ── Pick best side with positive edge ──
+    # Any positive edge (after friction) qualifies as a BUY signal.
+    # User-configured thresholds (edge_threshold, underdog rule) are
+    # applied by the frontend before firing orders.
     best_action = "NO_TRADE"
     best_edge = 0.0
     best_ticker = None
-    reason_code = "BLOCKED_EDGE_BELOW_THRESHOLD"
+    reason_code = "BLOCKED_NEGATIVE_EDGE"
 
-    if home_edge is not None and home_edge >= home_threshold and home_edge > best_edge:
+    if home_edge is not None and home_edge > 0 and home_edge > best_edge:
         best_edge = home_edge
         best_action = "BUY_HOME"
         best_ticker = home_market["ticker"] if home_market else None
         reason_code = None
 
-    if away_edge is not None and away_edge >= away_threshold and away_edge > best_edge:
+    if away_edge is not None and away_edge > 0 and away_edge > best_edge:
         best_edge = away_edge
         best_action = "BUY_AWAY"
         best_ticker = away_market["ticker"] if away_market else None
@@ -236,26 +233,19 @@ def evaluate_signal(
                 reason = "No price data available"
                 reason_code = "BLOCKED_NO_MARKET"
         else:
-            # We have edge data but it didn't meet thresholds
+            # Edge was non-positive after friction
             valid_edges = [e for e in [home_edge, away_edge] if e is not None]
             valid_raw = [e for e in [home_edge_raw, away_edge_raw] if e is not None]
             max_edge = max(valid_edges) if valid_edges else 0.0
             max_raw = max(valid_raw) if valid_raw else 0.0
 
-            # Check if friction specifically killed the edge
-            if max_raw >= config.min_edge_pct and max_edge < config.min_edge_pct:
-                reason = f"Edge {max_raw:.1f}% but {max_edge:.1f}% after friction"
+            # Check if friction specifically killed a positive raw edge
+            if max_raw > 0 and max_edge <= 0:
+                reason = f"Edge {max_raw:.1f}% wiped out by {config.friction_cents:.0f}c friction ({max_edge:.1f}% net)"
                 reason_code = "BLOCKED_FRICTION_GATE"
-            # Check if underdog rule specifically blocked
-            elif home_edge is not None and home_edge >= config.min_edge_pct and home_edge < home_threshold:
-                reason = f"Underdog edge {home_edge:.1f}% < 2x threshold {home_threshold:.1f}%"
-                reason_code = "BLOCKED_UNDERDOG_THRESHOLD"
-            elif away_edge is not None and away_edge >= config.min_edge_pct and away_edge < away_threshold:
-                reason = f"Underdog edge {away_edge:.1f}% < 2x threshold {away_threshold:.1f}%"
-                reason_code = "BLOCKED_UNDERDOG_THRESHOLD"
             else:
-                reason = f"Best edge {max_edge:.1f}% < threshold {config.min_edge_pct}%"
-                reason_code = "BLOCKED_EDGE_BELOW_THRESHOLD"
+                reason = f"Negative edge {max_edge:.1f}%"
+                reason_code = "BLOCKED_NEGATIVE_EDGE"
     else:
         reason = f"Edge: {best_edge:.1f}% (after friction)"
 

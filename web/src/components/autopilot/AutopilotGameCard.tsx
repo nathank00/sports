@@ -260,14 +260,21 @@ function LiveCard({
   const kalshiHomePrice = game.kalshiHomePrice ?? s.kalshi_home_price;
   const kalshiAwayPrice = game.kalshiAwayPrice ?? s.kalshi_away_price;
 
-  // Apply user's edge threshold to determine displayed action
-  // Backend uses a 2% floor, but the user may have a higher threshold
-  const displayedAction =
-    s.recommended_action !== "NO_TRADE" &&
-    s.edge_vs_kalshi != null &&
-    s.edge_vs_kalshi < edgeThreshold
-      ? "NO_TRADE"
-      : s.recommended_action;
+  // Apply user's edge threshold + underdog rule to determine displayed action.
+  // Backend recommends BUY for any positive edge; frontend enforces user thresholds.
+  const UNDERDOG_PROB_THRESHOLD = 0.20;
+  const displayedAction = (() => {
+    if (s.recommended_action === "NO_TRADE") return "NO_TRADE";
+    if (s.edge_vs_kalshi == null) return s.recommended_action;
+    // Basic edge threshold
+    if (s.edge_vs_kalshi < edgeThreshold) return "NO_TRADE";
+    // Underdog rule: 2x threshold for sides with <20% model probability
+    const sideProb = s.recommended_action === "BUY_HOME" ? homeProb : awayProb;
+    if (sideProb < UNDERDOG_PROB_THRESHOLD && s.edge_vs_kalshi < edgeThreshold * 2) {
+      return "NO_TRADE";
+    }
+    return s.recommended_action;
+  })();
 
   return (
     <div className="rounded-lg border border-neutral-800 bg-neutral-900/60 p-4">
@@ -475,18 +482,26 @@ function LiveCard({
               </span>
               <span
                 className={actionColor(
-                  sig.recommended_action !== "NO_TRADE" &&
-                    sig.edge_vs_kalshi != null &&
-                    sig.edge_vs_kalshi < edgeThreshold
-                    ? "NO_TRADE"
-                    : sig.recommended_action
+                  (() => {
+                    if (sig.recommended_action === "NO_TRADE") return "NO_TRADE";
+                    if (sig.edge_vs_kalshi == null) return sig.recommended_action;
+                    if (sig.edge_vs_kalshi < edgeThreshold) return "NO_TRADE";
+                    const sigHomeProb = sig.blended_home_win_prob ?? sig.model_home_win_prob;
+                    const sigSideProb = sig.recommended_action === "BUY_HOME" ? sigHomeProb : 1 - sigHomeProb;
+                    if (sigSideProb < UNDERDOG_PROB_THRESHOLD && sig.edge_vs_kalshi < edgeThreshold * 2) return "NO_TRADE";
+                    return sig.recommended_action;
+                  })()
                 )}
               >
-                {sig.recommended_action !== "NO_TRADE" &&
-                sig.edge_vs_kalshi != null &&
-                sig.edge_vs_kalshi < edgeThreshold
-                  ? "NO_TRADE"
-                  : sig.recommended_action}
+                {(() => {
+                  if (sig.recommended_action === "NO_TRADE") return "NO_TRADE";
+                  if (sig.edge_vs_kalshi == null) return sig.recommended_action;
+                  if (sig.edge_vs_kalshi < edgeThreshold) return "NO_TRADE";
+                  const sigHomeProb = sig.blended_home_win_prob ?? sig.model_home_win_prob;
+                  const sigSideProb = sig.recommended_action === "BUY_HOME" ? sigHomeProb : 1 - sigHomeProb;
+                  if (sigSideProb < UNDERDOG_PROB_THRESHOLD && sig.edge_vs_kalshi < edgeThreshold * 2) return "NO_TRADE";
+                  return sig.recommended_action;
+                })()}
               </span>
             </div>
           ))}
