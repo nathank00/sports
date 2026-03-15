@@ -22,7 +22,6 @@ from autopilot.src.trading.decision import (
     evaluate_signal,
     ABBR_TO_TEAM,
 )
-from autopilot.src.trading.position_manager import PositionManager
 from autopilot.src.ingest.espn_live import (
     fetch_live_scoreboard,
     fetch_live_game_detail,
@@ -31,7 +30,7 @@ from autopilot.src.ingest.nba_api_live import (
     fetch_cdn_scoreboard,
     fetch_cdn_boxscore,
 )
-from autopilot.src.db import supabase, write_log
+from autopilot.src.db import supabase, write_log, fetch_active_users
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +61,6 @@ class Orchestrator:
         self.model = model
         self.config = config or TradingConfig()
         self.games: dict[str, TrackedGame] = {}  # espn_game_id -> TrackedGame
-        self.position_manager = PositionManager()
         self.running = False
         self.last_active_time = time.monotonic()
         self.last_heartbeat_time = 0.0
@@ -117,10 +115,7 @@ class Orchestrator:
         if not active:
             return False
 
-        # 2. Clear user cache once per tick
-        self.position_manager.clear_user_cache()
-
-        # 3. Process each active game
+        # 2. Process each active game
         tasks = [self._process_game(session, game) for game in active]
         await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -206,26 +201,12 @@ class Orchestrator:
 
         now = time.monotonic()
 
-        # Refresh Kalshi markets if stale (needed by both exit monitoring and signal evaluation)
+        # Refresh Kalshi markets if stale (needed by signal evaluation)
         if now - tracker.kalshi_markets_updated > KALSHI_REFRESH_INTERVAL:
             tracker.kalshi_markets = await self._fetch_kalshi_markets(session)
             tracker.kalshi_markets_updated = now
 
-        # Monitor existing positions for auto-exit (TP/SL/late-game).
-        # Runs on EVERY state change — not gated by signal cooldown.
-        if tracker.kalshi_markets:
-            try:
-                self.position_manager.monitor_exits(
-                    kalshi_markets=tracker.kalshi_markets,
-                    period=period,
-                    seconds_remaining=seconds_remaining,
-                    home_team=home_team,
-                    away_team=away_team,
-                )
-            except Exception as e:
-                logger.error(f"Exit monitoring error for {home_team} vs {away_team}: {e}")
-
-        # Enforce signal cooldown (only gates signal evaluation, not exit monitoring)
+        # Enforce signal cooldown
         if now - tracker.last_signal_time < SIGNAL_COOLDOWN:
             return
 
@@ -292,7 +273,7 @@ class Orchestrator:
             and getattr(signal, "reason_code", None)
             and signal.reason_code.startswith("BLOCKED_")
         ):
-            active_users = self.position_manager.get_active_users()
+            active_users = fetch_active_users()
             for user_row in active_users:
                 try:
                     write_log(

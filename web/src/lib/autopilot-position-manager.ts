@@ -4,7 +4,7 @@
  * Kalshi is the source of truth. No state machine. No "pending" states.
  *
  * Entry:  signal arrives → fire buy order (30s auto-expiry) → verify via Kalshi after 30s
- * Exit:   backend sets sell_signal → fire sell order → verify via Kalshi after 30s
+ * Exit:   TP/SL/late-game triggers sell → verify via Kalshi after 30s
  * Manual: user clicks EXIT → same as above
  *
  */
@@ -20,6 +20,7 @@ import type {
   AutopilotSignal,
   AutopilotPosition,
   AutopilotSettingsV2,
+  PositionItem,
 } from "@/lib/types";
 
 export type LogCallback = (
@@ -28,6 +29,14 @@ export type LogCallback = (
   eventId?: string,
   metadata?: Record<string, unknown>
 ) => void;
+
+/** Game state for TP/SL + late-game exit checking. Keyed by team abbreviation in dashboard. */
+export interface GameState {
+  period: number;
+  secondsRemaining: number;
+  homeTeam: string;
+  awayTeam: string;
+}
 
 
 export class AutopilotPositionManager {
@@ -40,7 +49,7 @@ export class AutopilotPositionManager {
   /** Signals we've already acted on (by signal ID). Prevents re-buying on poll. */
   private processedSignals = new Set<number>();
 
-  /** DB positions we've already fired sells for (by event_id). Prevents re-selling. */
+  /** Events we've recently fired sells for (by event_id). Prevents re-selling. */
   private recentSellFired = new Map<string, number>();
 
   constructor(userId: string, onLog: LogCallback) {
@@ -158,16 +167,6 @@ export class AutopilotPositionManager {
         { orderId: result.orderId, ticker, contracts, askPrice, edge }
       );
 
-      // Write minimal DB record (for backend TP/SL checks)
-      await this.upsertPosition(eventPrefix, {
-        ticker,
-        side: side as "HOME" | "AWAY",
-        entry_price: askPrice,
-        home_team: signal.home_team,
-        away_team: signal.away_team,
-        sell_signal: null,
-      });
-
       // Verify after 30s
       setTimeout(() => this.verifyBuy(ticker, eventPrefix, gameLabel, contracts), 30_000);
     } catch (e) {
@@ -187,18 +186,12 @@ export class AutopilotPositionManager {
       const positions = await fetchPositions();
       const pos = positions.find((p) => p.ticker === ticker && p.position > 0);
       if (pos) {
-        // Update entry_price from Kalshi (exposure/position is the true average cost)
         const kalshiEntryPrice = pos.position > 0 ? pos.exposure / pos.position : 0;
-        if (kalshiEntryPrice > 0) {
-          await this.updateEntryPrice(eventPrefix, kalshiEntryPrice);
-        }
         this.onLog("TRADE", `${gameLabel}: BUY CONFIRMED — ${pos.position} contract(s) @ ${(kalshiEntryPrice * 100).toFixed(0)}c`, undefined);
         this.writeLog("TRADE", `${gameLabel}: BUY CONFIRMED — ${pos.position} contract(s) @ ${(kalshiEntryPrice * 100).toFixed(0)}c`, undefined);
       } else {
         this.onLog("INFO", `${gameLabel}: BUY NOT FILLED — will retry on next signal`, undefined);
         this.writeLog("INFO", `${gameLabel}: BUY NOT FILLED`, undefined);
-        // Delete the DB record since we don't actually own anything
-        await this.deletePosition(eventPrefix);
       }
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
@@ -208,44 +201,27 @@ export class AutopilotPositionManager {
     }
   }
 
-  // ── Exit: triggered by sell_signal from backend or manual button ───
+  // ── Exit: triggered by TP/SL/late-game or manual button ────────────
 
   /**
-   * Check DB positions for sell_signal set by backend (TP/SL).
-   * Called by dashboard polling loop.
-   */
-  async checkSellSignals(): Promise<void> {
-    try {
-      const { data } = await supabase
-        .from("autopilot_positions")
-        .select("*")
-        .eq("user_id", this.userId)
-        .not("sell_signal", "is", null);
-
-      if (!data || data.length === 0) return;
-
-      for (const pos of data as AutopilotPosition[]) {
-        await this.fireSell(pos, "AUTO");
-      }
-    } catch (e) {
-      console.error("checkSellSignals error:", e);
-    }
-  }
-
-  /**
-   * Frontend-side TP/SL checking — runs every 5s from dashboard poll.
-   * Uses authenticated Kalshi API for reliable bid data (unlike backend's public API).
-   * Directly fires sells when TP/SL conditions are met — no backend middleman.
+   * Frontend-side TP/SL + late-game exit checking — runs every 5s from dashboard poll.
+   *
+   * Uses KALSHI POSITIONS as source of truth. Entry price is computed from
+   * Kalshi exposure/position. Game state (period, seconds remaining) comes from
+   * the gameStates map built from dashboard signals.
+   *
+   * Market bids come from the authenticated Kalshi API (reliable data).
    */
   async checkAutoExits(
     settings: AutopilotSettingsV2,
-    dbPositions: AutopilotPosition[],
+    kalshiPositions: PositionItem[],
+    gameStates: Map<string, GameState>,
   ): Promise<void> {
-    // Filter to positions we can evaluate (have entry_price, no pending sell_signal)
-    const activePositions = dbPositions.filter(
-      (p) => p.entry_price != null && p.entry_price > 0 && p.sell_signal == null
+    // Work from actual Kalshi holdings
+    const activeKalshi = kalshiPositions.filter(
+      (kp) => kp.position > 0 && kp.ticker.startsWith("KXNBA")
     );
-    if (activePositions.length === 0) return;
+    if (activeKalshi.length === 0) return;
 
     // Fetch fresh market prices (one authenticated API call for all positions)
     let markets: Awaited<ReturnType<typeof fetchNbaMarkets>>;
@@ -256,42 +232,70 @@ export class AutopilotPositionManager {
       return;
     }
 
-    for (const pos of activePositions) {
-      const { ticker, entry_price, event_id, home_team, away_team } = pos;
+    for (const kp of activeKalshi) {
+      const { ticker } = kp;
       const eventPrefix = ticker.substring(0, ticker.lastIndexOf("-"));
-      const gameLabel = `${away_team}@${home_team}`;
 
       // Skip if already processing or recently sold
       if (this.busyEvents.has(eventPrefix)) continue;
-      const lastSell = this.recentSellFired.get(event_id);
+      const lastSell = this.recentSellFired.get(eventPrefix);
       if (lastSell && Date.now() - lastSell < 45_000) continue;
 
-      // Find matching market and get current bid (fallback to lastPrice like fireSell does)
+      // Entry price from Kalshi (exposure / position)
+      const entryPrice = kp.position > 0 ? kp.exposure / kp.position : 0;
+      if (entryPrice <= 0) continue;
+
+      // Look up game state by team abbreviation from ticker
+      const tickerTeam = ticker.substring(ticker.lastIndexOf("-") + 1);
+      const gameState = gameStates.get(tickerTeam);
+      const gameLabel = gameState
+        ? `${gameState.awayTeam}@${gameState.homeTeam}`
+        : ticker;
+
+      // Get current bid from markets (fallback to lastPrice like fireSell does)
       const market = markets.find((m) => m.ticker === ticker);
       const currentBid = market?.yesBid ?? market?.lastPrice;
+
+      // Build position object for fireSell
+      const isHome = gameState ? tickerTeam === gameState.homeTeam : true;
+      const posForSell: AutopilotPosition = {
+        user_id: this.userId,
+        event_id: eventPrefix,
+        ticker,
+        side: isHome ? "HOME" : "AWAY",
+        entry_price: entryPrice,
+        home_team: gameState?.homeTeam ?? "",
+        away_team: gameState?.awayTeam ?? "",
+        sell_signal: null,
+      };
+
       if (currentBid == null) {
-        console.warn(`[TP/SL] ${gameLabel}: No bid/lastPrice for ${ticker} (market found: ${!!market})`);
+        // Only warn if market object exists but has no price data.
+        // Missing market = closed/settled game — skip silently.
+        if (market) {
+          console.warn(`[TP/SL] ${gameLabel}: No bid/lastPrice for ${ticker}`);
+        }
         continue;
       }
 
-      const pnl = currentBid - entry_price;
+      const pnl = currentBid - entryPrice;
       console.log(
-        `[TP/SL] ${gameLabel}: bid=${(currentBid * 100).toFixed(0)}c entry=${(entry_price * 100).toFixed(0)}c pnl=${(pnl * 100).toFixed(0)}c | TP=${(settings.take_profit * 100).toFixed(0)}c SL=-${(settings.stop_loss * 100).toFixed(0)}c`
+        `[TP/SL] ${gameLabel}: bid=${(currentBid * 100).toFixed(0)}c entry=${(entryPrice * 100).toFixed(0)}c pnl=${(pnl * 100).toFixed(0)}c | TP=${(settings.take_profit * 100).toFixed(0)}c SL=-${(settings.stop_loss * 100).toFixed(0)}c`
       );
 
       // Take-profit check
       if (pnl >= settings.take_profit) {
         this.onLog(
           "EXIT",
-          `${gameLabel}: TAKE PROFIT — +${(pnl * 100).toFixed(0)}c/contract (entry=${(entry_price * 100).toFixed(0)}c, bid=${(currentBid * 100).toFixed(0)}c)`,
+          `${gameLabel}: TAKE PROFIT — +${(pnl * 100).toFixed(0)}c/contract (entry=${(entryPrice * 100).toFixed(0)}c, bid=${(currentBid * 100).toFixed(0)}c)`,
         );
         this.writeLog(
           "EXIT",
-          `${gameLabel}: TAKE PROFIT — +${(pnl * 100).toFixed(0)}c/contract (entry=${(entry_price * 100).toFixed(0)}c, bid=${(currentBid * 100).toFixed(0)}c)`,
+          `${gameLabel}: TAKE PROFIT — +${(pnl * 100).toFixed(0)}c/contract (entry=${(entryPrice * 100).toFixed(0)}c, bid=${(currentBid * 100).toFixed(0)}c)`,
           undefined,
-          { reason_code: "EXIT_TP_TRIGGERED", entry_price, currentBid, pnl_per_contract: pnl, ticker },
+          { reason_code: "EXIT_TP_TRIGGERED", entry_price: entryPrice, currentBid, pnl_per_contract: pnl, ticker },
         );
-        await this.fireSell(pos, "TAKE PROFIT");
+        await this.fireSell(posForSell, "TAKE PROFIT");
         continue;
       }
 
@@ -299,15 +303,15 @@ export class AutopilotPositionManager {
       if (pnl <= -settings.stop_loss) {
         this.onLog(
           "EXIT",
-          `${gameLabel}: STOP LOSS — ${(pnl * 100).toFixed(0)}c/contract (entry=${(entry_price * 100).toFixed(0)}c, bid=${(currentBid * 100).toFixed(0)}c)`,
+          `${gameLabel}: STOP LOSS — ${(pnl * 100).toFixed(0)}c/contract (entry=${(entryPrice * 100).toFixed(0)}c, bid=${(currentBid * 100).toFixed(0)}c)`,
         );
         this.writeLog(
           "EXIT",
-          `${gameLabel}: STOP LOSS — ${(pnl * 100).toFixed(0)}c/contract (entry=${(entry_price * 100).toFixed(0)}c, bid=${(currentBid * 100).toFixed(0)}c)`,
+          `${gameLabel}: STOP LOSS — ${(pnl * 100).toFixed(0)}c/contract (entry=${(entryPrice * 100).toFixed(0)}c, bid=${(currentBid * 100).toFixed(0)}c)`,
           undefined,
-          { reason_code: "EXIT_SL_TRIGGERED", entry_price, currentBid, pnl_per_contract: pnl, ticker },
+          { reason_code: "EXIT_SL_TRIGGERED", entry_price: entryPrice, currentBid, pnl_per_contract: pnl, ticker },
         );
-        await this.fireSell(pos, "STOP LOSS");
+        await this.fireSell(posForSell, "STOP LOSS");
         continue;
       }
     }
@@ -327,6 +331,12 @@ export class AutopilotPositionManager {
   private async fireSell(position: AutopilotPosition, reason: string): Promise<void> {
     const { ticker, side, entry_price, home_team, away_team, event_id } = position;
     const gameLabel = `${away_team}@${home_team}`;
+
+    if (!ticker) {
+      this.onLog("INFO", `${gameLabel}: No ticker — cannot sell`, undefined);
+      return;
+    }
+
     const eventPrefix = ticker.substring(0, ticker.lastIndexOf("-"));
 
     // Skip if already processing this game
@@ -349,8 +359,7 @@ export class AutopilotPositionManager {
       const positions = await fetchPositions();
       const pos = positions.find((p) => p.ticker === ticker && p.position > 0);
       if (!pos || pos.position <= 0) {
-        this.onLog("INFO", `${gameLabel}: No position found on Kalshi for ${ticker} — cleaning up`, undefined);
-        await this.deletePosition(eventPrefix);
+        this.onLog("INFO", `${gameLabel}: No position found on Kalshi for ${ticker}`, undefined);
         return;
       }
       quantity = pos.position;
@@ -409,13 +418,6 @@ export class AutopilotPositionManager {
         { orderId: result.orderId, ticker, quantity, bidPrice, reason, pnl: totalPnl }
       );
 
-      // Clear sell_signal immediately
-      await supabase
-        .from("autopilot_positions")
-        .update({ sell_signal: null })
-        .eq("user_id", this.userId)
-        .eq("event_id", event_id);
-
       // Verify after 30s
       setTimeout(() => this.verifySell(ticker, eventPrefix, gameLabel, quantity), 30_000);
     } catch (e) {
@@ -433,11 +435,9 @@ export class AutopilotPositionManager {
       if (!pos || pos.position <= 0) {
         this.onLog("TRADE", `${gameLabel}: SELL CONFIRMED — position closed`, undefined);
         this.writeLog("TRADE", `${gameLabel}: SELL CONFIRMED — position closed`, undefined);
-        await this.deletePosition(eventPrefix);
       } else {
         this.onLog("INFO", `${gameLabel}: SELL NOT FILLED — still own ${pos.position} contract(s)`, undefined);
         this.writeLog("INFO", `${gameLabel}: SELL NOT FILLED — still own ${pos.position}`, undefined);
-        // Don't delete the position — backend will re-trigger sell_signal on next tick
       }
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
@@ -457,43 +457,6 @@ export class AutopilotPositionManager {
     if (price <= 0 || price >= 1) return 1;
     const count = Math.floor(settings.bet_amount / price);
     return Math.min(Math.max(count, 1), settings.max_contracts_per_bet);
-  }
-
-  private async upsertPosition(eventId: string, data: Omit<AutopilotPosition, "user_id" | "event_id">): Promise<void> {
-    try {
-      await supabase
-        .from("autopilot_positions")
-        .upsert(
-          { user_id: this.userId, event_id: eventId, ...data },
-          { onConflict: "user_id,event_id" }
-        );
-    } catch (e) {
-      console.error("upsertPosition error:", e);
-    }
-  }
-
-  private async updateEntryPrice(eventId: string, entryPrice: number): Promise<void> {
-    try {
-      await supabase
-        .from("autopilot_positions")
-        .update({ entry_price: entryPrice })
-        .eq("user_id", this.userId)
-        .eq("event_id", eventId);
-    } catch (e) {
-      console.error("updateEntryPrice error:", e);
-    }
-  }
-
-  private async deletePosition(eventId: string): Promise<void> {
-    try {
-      await supabase
-        .from("autopilot_positions")
-        .delete()
-        .eq("user_id", this.userId)
-        .eq("event_id", eventId);
-    } catch (e) {
-      console.error("deletePosition error:", e);
-    }
   }
 
   private async writeLog(level: string, message: string, eventId?: string, metadata?: Record<string, unknown>): Promise<void> {

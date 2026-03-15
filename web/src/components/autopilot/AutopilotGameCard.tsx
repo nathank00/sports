@@ -5,7 +5,6 @@ import type { AutopilotGame, AutopilotPosition, PositionItem } from "@/lib/types
 
 interface Props {
   game: AutopilotGame;
-  dbPosition: AutopilotPosition | null;
   kalshiPosition: PositionItem | null;
   edgeThreshold: number;
   onManualExit: (position: AutopilotPosition) => void;
@@ -56,7 +55,6 @@ function PositionSection({
   awayTeam,
   currentHomePrice,
   currentAwayPrice,
-  dbPosition,
   onManualExit,
 }: {
   kalshiPosition: PositionItem;
@@ -64,7 +62,6 @@ function PositionSection({
   awayTeam: string;
   currentHomePrice?: number | null;
   currentAwayPrice?: number | null;
-  dbPosition?: AutopilotPosition | null;
   onManualExit: (position: AutopilotPosition) => void;
 }) {
   const quantity = kalshiPosition.position;
@@ -87,22 +84,17 @@ function PositionSection({
       : null;
 
   const handleExit = () => {
-    if (dbPosition) {
-      onManualExit(dbPosition);
-    } else {
-      // Construct position from Kalshi data for manual exit
-      const eventPrefix = kalshiPosition.ticker.substring(0, kalshiPosition.ticker.lastIndexOf("-"));
-      onManualExit({
-        user_id: "",
-        event_id: eventPrefix,
-        ticker: kalshiPosition.ticker,
-        side: isHome ? "HOME" : "AWAY",
-        entry_price: entryPrice,
-        home_team: homeTeam,
-        away_team: awayTeam,
-        sell_signal: null,
-      });
-    }
+    const eventPrefix = kalshiPosition.ticker.substring(0, kalshiPosition.ticker.lastIndexOf("-"));
+    onManualExit({
+      user_id: "",
+      event_id: eventPrefix,
+      ticker: kalshiPosition.ticker,
+      side: isHome ? "HOME" : "AWAY",
+      entry_price: entryPrice,
+      home_team: homeTeam,
+      away_team: awayTeam,
+      sell_signal: null,
+    });
   };
 
   return (
@@ -152,12 +144,10 @@ function PositionSection({
 
 function PregameCard({
   game,
-  dbPosition,
   kalshiPosition,
   onManualExit,
 }: {
   game: AutopilotGame;
-  dbPosition: AutopilotPosition | null;
   kalshiPosition: PositionItem | null;
   onManualExit: (position: AutopilotPosition) => void;
 }) {
@@ -221,7 +211,6 @@ function PregameCard({
           awayTeam={game.awayTeam}
           currentHomePrice={homePrice}
           currentAwayPrice={awayPrice}
-          dbPosition={dbPosition}
           onManualExit={onManualExit}
         />
       )}
@@ -237,13 +226,11 @@ function PregameCard({
 
 function LiveCard({
   game,
-  dbPosition,
   kalshiPosition,
   edgeThreshold,
   onManualExit,
 }: {
   game: AutopilotGame;
-  dbPosition: AutopilotPosition | null;
   kalshiPosition: PositionItem | null;
   edgeThreshold: number;
   onManualExit: (position: AutopilotPosition) => void;
@@ -446,7 +433,6 @@ function LiveCard({
           awayTeam={game.awayTeam}
           currentHomePrice={kalshiHomePrice}
           currentAwayPrice={kalshiAwayPrice}
-          dbPosition={dbPosition}
           onManualExit={onManualExit}
         />
       )}
@@ -515,12 +501,10 @@ function LiveCard({
 
 function FinishedCard({
   game,
-  dbPosition,
   kalshiPosition,
   onManualExit,
 }: {
   game: AutopilotGame;
-  dbPosition: AutopilotPosition | null;
   kalshiPosition: PositionItem | null;
   onManualExit: (position: AutopilotPosition) => void;
 }) {
@@ -565,7 +549,6 @@ function FinishedCard({
           awayTeam={game.awayTeam}
           currentHomePrice={game.kalshiHomePrice ?? s.kalshi_home_price}
           currentAwayPrice={game.kalshiAwayPrice ?? s.kalshi_away_price}
-          dbPosition={dbPosition}
           onManualExit={onManualExit}
         />
       )}
@@ -577,7 +560,6 @@ function FinishedCard({
 
 export default function AutopilotGameCard({
   game,
-  dbPosition,
   kalshiPosition,
   edgeThreshold,
   onManualExit,
@@ -587,7 +569,6 @@ export default function AutopilotGameCard({
     return (
       <FinishedCard
         game={game}
-        dbPosition={dbPosition}
         kalshiPosition={kalshiPosition}
         onManualExit={onManualExit}
       />
@@ -597,7 +578,6 @@ export default function AutopilotGameCard({
     return (
       <LiveCard
         game={game}
-        dbPosition={dbPosition}
         kalshiPosition={kalshiPosition}
         edgeThreshold={edgeThreshold}
         onManualExit={onManualExit}
@@ -607,7 +587,6 @@ export default function AutopilotGameCard({
   return (
     <PregameCard
       game={game}
-      dbPosition={dbPosition}
       kalshiPosition={kalshiPosition}
       onManualExit={onManualExit}
     />

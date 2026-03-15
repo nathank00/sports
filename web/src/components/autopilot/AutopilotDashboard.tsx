@@ -4,7 +4,7 @@ import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { supabase } from "@/lib/supabase";
 import { hasKalshiKeys } from "@/lib/kalshi-crypto";
 import { fetchPositions } from "@/lib/kalshi-api";
-import { AutopilotPositionManager } from "@/lib/autopilot-position-manager";
+import { AutopilotPositionManager, type GameState } from "@/lib/autopilot-position-manager";
 import AutopilotGameCard from "./AutopilotGameCard";
 import type {
   AutopilotSignal,
@@ -109,8 +109,6 @@ export default function AutopilotDashboard({ userId }: Props) {
 
   // Kalshi positions — source of truth, polled every 5s
   const [kalshiPositions, setKalshiPositions] = useState<PositionItem[]>([]);
-  // DB positions — minimal, just for entry_price and game label lookup
-  const [dbPositions, setDbPositions] = useState<Map<string, AutopilotPosition>>(new Map());
 
   const positionManagerRef = useRef<AutopilotPositionManager | null>(null);
   // Ref to always call the latest handleNewSignal from the Supabase subscription
@@ -121,6 +119,10 @@ export default function AutopilotDashboard({ userId }: Props) {
   const latestSignalTsRef = useRef<string | null>(null);
   // Ref to settings so signal handlers always see latest
   const settingsRef = useRef<AutopilotSettingsV2 | null>(null);
+  // Ref to Kalshi positions so the exit poll can access latest without stale closure
+  const kalshiPositionsRef = useRef<PositionItem[]>([]);
+  // Ref to games so we can build gameStates map for TP/SL + late-game exits
+  const gamesRef = useRef<Map<string, AutopilotGame>>(new Map());
 
   // ── Initialize position manager ─────────────────────────────────────
 
@@ -227,15 +229,42 @@ export default function AutopilotDashboard({ userId }: Props) {
     loadSettings();
   }, [userId]);
 
-  // ── Poll Kalshi positions every 5s (source of truth) ──────────────
+  // ── Poll Kalshi positions every 5s + run TP/SL + late-game exits ────
 
   useEffect(() => {
     const poll = async () => {
       try {
         const positions = await fetchPositions();
         setKalshiPositions(positions);
+        kalshiPositionsRef.current = positions;
       } catch {
         // Silently fail — will retry in 5s
+        return;
+      }
+
+      // TP/SL + late-game exit checking — runs on every Kalshi poll
+      const currentSettings = settingsRef.current;
+      if (currentSettings?.auto_execute_enabled && positionManagerRef.current) {
+        // Build gameStates map from current games (keyed by team abbreviation)
+        const gameStates = new Map<string, GameState>();
+        for (const game of gamesRef.current.values()) {
+          if (game.latestSignal) {
+            const state: GameState = {
+              period: game.latestSignal.period,
+              secondsRemaining: game.latestSignal.seconds_remaining,
+              homeTeam: game.homeTeam,
+              awayTeam: game.awayTeam,
+            };
+            gameStates.set(game.homeTeam, state);
+            gameStates.set(game.awayTeam, state);
+          }
+        }
+
+        await positionManagerRef.current.checkAutoExits(
+          currentSettings,
+          kalshiPositionsRef.current,
+          gameStates,
+        );
       }
     };
 
@@ -243,44 +272,6 @@ export default function AutopilotDashboard({ userId }: Props) {
     const interval = setInterval(poll, 5_000);
     return () => clearInterval(interval);
   }, []);
-
-  // ── Poll DB positions (minimal — just for entry_price + sell_signal) ──
-
-  useEffect(() => {
-    const poll = async () => {
-      let positions: AutopilotPosition[] = [];
-      try {
-        const { data } = await supabase
-          .from("autopilot_positions")
-          .select("*")
-          .eq("user_id", userId);
-
-        if (data) {
-          positions = data as AutopilotPosition[];
-          const map = new Map<string, AutopilotPosition>();
-          for (const pos of positions) {
-            map.set(pos.event_id, pos);
-          }
-          setDbPositions(map);
-        }
-      } catch (e) {
-        console.error("DB positions poll error:", e);
-      }
-
-      // Check for backend-set sell signals
-      await positionManagerRef.current?.checkSellSignals();
-
-      // Frontend TP/SL checking (authenticated Kalshi API — reliable bid data)
-      const currentSettings = settingsRef.current;
-      if (currentSettings?.auto_execute_enabled && positions.length > 0) {
-        await positionManagerRef.current?.checkAutoExits(currentSettings, positions);
-      }
-    };
-
-    poll();
-    const interval = setInterval(poll, 5_000);
-    return () => clearInterval(interval);
-  }, [userId]);
 
   // ── Fetch logs from Supabase + poll every 5s ─────────────────────────
 
@@ -556,8 +547,9 @@ export default function AutopilotDashboard({ userId }: Props) {
     }
   }, []);
 
-  // Keep ref in sync so the Supabase subscription always calls the latest version
+  // Keep refs in sync so callbacks always see the latest values
   handleNewSignalRef.current = handleNewSignal;
+  gamesRef.current = games;
 
   // ── Settings management ──────────────────────────────────────────────
 
@@ -612,36 +604,10 @@ export default function AutopilotDashboard({ userId }: Props) {
     );
   };
 
-  /** Find DB position for a game by matching teams. */
-  const getDbPositionForGame = useCallback(
-    (game: AutopilotGame): AutopilotPosition | null => {
-      for (const pos of dbPositions.values()) {
-        if (
-          pos.home_team === game.homeTeam &&
-          pos.away_team === game.awayTeam
-        ) {
-          return pos;
-        }
-      }
-      return null;
-    },
-    [dbPositions]
-  );
-
   /** Find Kalshi position for a game by matching ticker to game teams. */
   const getKalshiPositionForGame = useCallback(
     (game: AutopilotGame): PositionItem | null => {
-      // First try: match via DB position ticker
-      const dbPos = getDbPositionForGame(game);
-      if (dbPos?.ticker) {
-        const eventPrefix = dbPos.ticker.substring(0, dbPos.ticker.lastIndexOf("-"));
-        const match = kalshiPositions.find(
-          (p) => p.position > 0 && p.ticker.startsWith(eventPrefix)
-        );
-        if (match) return match;
-      }
-
-      // Fallback: check via signal tickers (from the game's latest signal)
+      // Check via signal tickers (from the game's latest signal)
       if (game.latestSignal) {
         const homeTicker = game.latestSignal.kalshi_ticker_home;
         const awayTicker = game.latestSignal.kalshi_ticker_away;
@@ -655,7 +621,7 @@ export default function AutopilotDashboard({ userId }: Props) {
         }
       }
 
-      // Last resort: match by team abbreviation in ticker
+      // Fallback: match by team abbreviation in ticker
       const homeAbbr = game.homeTeam;
       const awayAbbr = game.awayTeam;
       const match = kalshiPositions.find(
@@ -664,7 +630,7 @@ export default function AutopilotDashboard({ userId }: Props) {
       );
       return match || null;
     },
-    [kalshiPositions, getDbPositionForGame]
+    [kalshiPositions]
   );
 
   /** Check if a game is finished (Final, Final/OT, etc.). */
@@ -1153,7 +1119,6 @@ export default function AutopilotDashboard({ userId }: Props) {
               <AutopilotGameCard
                 key={game.gameId}
                 game={game}
-                dbPosition={getDbPositionForGame(game)}
                 kalshiPosition={getKalshiPositionForGame(game)}
                 edgeThreshold={effectiveSettings.edge_threshold}
                 onManualExit={handleManualExit}
