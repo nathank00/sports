@@ -204,8 +204,28 @@ class Orchestrator:
             away_fouls=detail.get("away_stats", {}).get("pf"),
         )
 
-        # Enforce signal cooldown
         now = time.monotonic()
+
+        # Refresh Kalshi markets if stale (needed by both exit monitoring and signal evaluation)
+        if now - tracker.kalshi_markets_updated > KALSHI_REFRESH_INTERVAL:
+            tracker.kalshi_markets = await self._fetch_kalshi_markets(session)
+            tracker.kalshi_markets_updated = now
+
+        # Monitor existing positions for auto-exit (TP/SL/late-game).
+        # Runs on EVERY state change — not gated by signal cooldown.
+        if tracker.kalshi_markets:
+            try:
+                self.position_manager.monitor_exits(
+                    kalshi_markets=tracker.kalshi_markets,
+                    period=period,
+                    seconds_remaining=seconds_remaining,
+                    home_team=home_team,
+                    away_team=away_team,
+                )
+            except Exception as e:
+                logger.error(f"Exit monitoring error for {home_team} vs {away_team}: {e}")
+
+        # Enforce signal cooldown (only gates signal evaluation, not exit monitoring)
         if now - tracker.last_signal_time < SIGNAL_COOLDOWN:
             return
 
@@ -222,11 +242,6 @@ class Orchestrator:
         )
         tracker.last_raw_model_prob = model_prob
         tracker.last_blended_prob = blended_prob
-
-        # Refresh Kalshi markets if stale
-        if now - tracker.kalshi_markets_updated > KALSHI_REFRESH_INTERVAL:
-            tracker.kalshi_markets = await self._fetch_kalshi_markets(session)
-            tracker.kalshi_markets_updated = now
 
         # Evaluate signal
         home_full = ABBR_TO_TEAM.get(home_team, home_team)
@@ -288,19 +303,6 @@ class Orchestrator:
                     )
                 except Exception:
                     pass
-
-        # Monitor existing positions for auto-exit (TP/SL/late-game)
-        if tracker.kalshi_markets:
-            try:
-                self.position_manager.monitor_exits(
-                    kalshi_markets=tracker.kalshi_markets,
-                    period=period,
-                    seconds_remaining=seconds_remaining,
-                    home_team=home_team,
-                    away_team=away_team,
-                )
-            except Exception as e:
-                logger.error(f"Exit monitoring error for {home_team} vs {away_team}: {e}")
 
     async def _fetch_kalshi_markets(self, session: aiohttp.ClientSession) -> list[dict]:
         """Fetch open NBA markets from Kalshi.

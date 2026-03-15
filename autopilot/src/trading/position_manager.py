@@ -95,11 +95,16 @@ class PositionManager:
 
         home_market, away_market = match_markets(home_full, away_full, kalshi_markets)
 
+        if not home_market and not away_market:
+            logger.debug(f"  monitor_exits: no Kalshi markets matched for {away_team}@{home_team}")
+            return
+
         # Get current bid prices (we exit at bid, not ask)
         home_bid = _extract_yes_bid(home_market) if home_market else None
         away_bid = _extract_yes_bid(away_market) if away_market else None
 
         if not home_bid and not away_bid:
+            logger.debug(f"  monitor_exits: no bid prices for {away_team}@{home_team} (home_bid={home_bid}, away_bid={away_bid})")
             return  # Can't evaluate exits without prices
 
         # Determine event_id from market tickers
@@ -117,6 +122,12 @@ class PositionManager:
         # Fetch all positions with entry_price for this event
         positions = fetch_positions_with_entry_price(event_id)
 
+        if positions:
+            logger.info(
+                f"  monitor_exits: {away_team}@{home_team} — "
+                f"{len(positions)} position(s), home_bid={home_bid}, away_bid={away_bid}"
+            )
+
         for pos in positions:
             user_id = pos["user_id"]
             entry_price = pos.get("entry_price")
@@ -124,6 +135,7 @@ class PositionManager:
             ticker = pos.get("ticker")
 
             if not entry_price or not side or not ticker:
+                logger.warning(f"  monitor_exits: skipping position — missing data: entry={entry_price}, side={side}, ticker={ticker}")
                 continue
 
             # Skip if sell_signal already set (frontend hasn't acted yet)
@@ -132,6 +144,7 @@ class PositionManager:
 
             current_bid = home_bid if side == "HOME" else away_bid
             if current_bid is None:
+                logger.debug(f"  monitor_exits: no bid for side={side}")
                 continue
 
             # Compute unrealized P&L per contract
@@ -140,8 +153,15 @@ class PositionManager:
             # Fetch user settings for TP/SL thresholds
             user_settings_row = self._get_user_settings(user_id)
             if not user_settings_row:
+                logger.warning(f"  monitor_exits: no settings found for user {user_id[:8]}...")
                 continue
             settings = UserSettings.from_row(user_settings_row)
+
+            logger.info(
+                f"  monitor_exits: {ticker} side={side} entry={entry_price:.2f} "
+                f"bid={current_bid:.2f} pnl={pnl_per_contract:+.4f} "
+                f"TP={settings.take_profit:.2f} SL={settings.stop_loss:.2f}"
+            )
 
             exit_reason = None
             exit_reason_code = None

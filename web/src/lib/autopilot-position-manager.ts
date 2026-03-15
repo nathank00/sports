@@ -233,6 +233,80 @@ export class AutopilotPositionManager {
   }
 
   /**
+   * Frontend-side TP/SL checking — runs every 5s from dashboard poll.
+   * Uses authenticated Kalshi API for reliable bid data (unlike backend's public API).
+   * Directly fires sells when TP/SL conditions are met — no backend middleman.
+   */
+  async checkAutoExits(
+    settings: AutopilotSettingsV2,
+    dbPositions: AutopilotPosition[],
+  ): Promise<void> {
+    // Filter to positions we can evaluate (have entry_price, no pending sell_signal)
+    const activePositions = dbPositions.filter(
+      (p) => p.entry_price && p.sell_signal == null
+    );
+    if (activePositions.length === 0) return;
+
+    // Fetch fresh market prices (one authenticated API call for all positions)
+    let markets: Awaited<ReturnType<typeof fetchNbaMarkets>>;
+    try {
+      markets = await fetchNbaMarkets();
+    } catch {
+      return; // Will retry on next 5s poll
+    }
+
+    for (const pos of activePositions) {
+      const { ticker, entry_price, event_id, home_team, away_team } = pos;
+      const eventPrefix = ticker.substring(0, ticker.lastIndexOf("-"));
+      const gameLabel = `${away_team}@${home_team}`;
+
+      // Skip if already processing or recently sold
+      if (this.busyEvents.has(eventPrefix)) continue;
+      const lastSell = this.recentSellFired.get(event_id);
+      if (lastSell && Date.now() - lastSell < 45_000) continue;
+
+      // Find matching market and get current bid
+      const market = markets.find((m) => m.ticker === ticker);
+      if (!market?.yesBid) continue;
+
+      const currentBid = market.yesBid;
+      const pnl = currentBid - entry_price;
+
+      // Take-profit check
+      if (pnl >= settings.take_profit) {
+        this.onLog(
+          "EXIT",
+          `${gameLabel}: TAKE PROFIT — +${(pnl * 100).toFixed(0)}c/contract (entry=${(entry_price * 100).toFixed(0)}c, bid=${(currentBid * 100).toFixed(0)}c)`,
+        );
+        this.writeLog(
+          "EXIT",
+          `${gameLabel}: TAKE PROFIT — +${(pnl * 100).toFixed(0)}c/contract (entry=${(entry_price * 100).toFixed(0)}c, bid=${(currentBid * 100).toFixed(0)}c)`,
+          undefined,
+          { reason_code: "EXIT_TP_TRIGGERED", entry_price, currentBid, pnl_per_contract: pnl, ticker },
+        );
+        await this.fireSell(pos, "TAKE PROFIT");
+        continue;
+      }
+
+      // Stop-loss check
+      if (pnl <= -settings.stop_loss) {
+        this.onLog(
+          "EXIT",
+          `${gameLabel}: STOP LOSS — ${(pnl * 100).toFixed(0)}c/contract (entry=${(entry_price * 100).toFixed(0)}c, bid=${(currentBid * 100).toFixed(0)}c)`,
+        );
+        this.writeLog(
+          "EXIT",
+          `${gameLabel}: STOP LOSS — ${(pnl * 100).toFixed(0)}c/contract (entry=${(entry_price * 100).toFixed(0)}c, bid=${(currentBid * 100).toFixed(0)}c)`,
+          undefined,
+          { reason_code: "EXIT_SL_TRIGGERED", entry_price, currentBid, pnl_per_contract: pnl, ticker },
+        );
+        await this.fireSell(pos, "STOP LOSS");
+        continue;
+      }
+    }
+  }
+
+  /**
    * Manual exit — user clicked EXIT button on a game card.
    * Bypasses the recentSellFired cooldown (that's for AUTO sells only).
    */
@@ -243,7 +317,7 @@ export class AutopilotPositionManager {
     await this.fireSell(position, "MANUAL");
   }
 
-  private async fireSell(position: AutopilotPosition, reason: "AUTO" | "MANUAL"): Promise<void> {
+  private async fireSell(position: AutopilotPosition, reason: string): Promise<void> {
     const { ticker, side, entry_price, home_team, away_team, event_id } = position;
     const gameLabel = `${away_team}@${home_team}`;
     const eventPrefix = ticker.substring(0, ticker.lastIndexOf("-"));
@@ -255,8 +329,8 @@ export class AutopilotPositionManager {
     }
 
     // Skip if we recently fired a sell for this event (within 45s)
-    // Manual exits bypass this cooldown — only AUTO sells are throttled
-    if (reason === "AUTO") {
+    // Manual exits bypass this cooldown — auto/TP/SL sells are throttled
+    if (reason !== "MANUAL") {
       const lastSell = this.recentSellFired.get(event_id);
       if (lastSell && Date.now() - lastSell < 45_000) return;
     }

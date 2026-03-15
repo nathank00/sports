@@ -248,6 +248,7 @@ export default function AutopilotDashboard({ userId }: Props) {
 
   useEffect(() => {
     const poll = async () => {
+      let positions: AutopilotPosition[] = [];
       try {
         const { data } = await supabase
           .from("autopilot_positions")
@@ -255,8 +256,9 @@ export default function AutopilotDashboard({ userId }: Props) {
           .eq("user_id", userId);
 
         if (data) {
+          positions = data as AutopilotPosition[];
           const map = new Map<string, AutopilotPosition>();
-          for (const pos of data as AutopilotPosition[]) {
+          for (const pos of positions) {
             map.set(pos.event_id, pos);
           }
           setDbPositions(map);
@@ -265,8 +267,14 @@ export default function AutopilotDashboard({ userId }: Props) {
         console.error("DB positions poll error:", e);
       }
 
-      // Check for sell signals
+      // Check for backend-set sell signals
       await positionManagerRef.current?.checkSellSignals();
+
+      // Frontend TP/SL checking (authenticated Kalshi API — reliable bid data)
+      const currentSettings = settingsRef.current;
+      if (currentSettings?.auto_execute_enabled && positions.length > 0) {
+        await positionManagerRef.current?.checkAutoExits(currentSettings, positions);
+      }
     };
 
     poll();
