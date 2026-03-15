@@ -243,7 +243,7 @@ export class AutopilotPositionManager {
   ): Promise<void> {
     // Filter to positions we can evaluate (have entry_price, no pending sell_signal)
     const activePositions = dbPositions.filter(
-      (p) => p.entry_price && p.sell_signal == null
+      (p) => p.entry_price != null && p.entry_price > 0 && p.sell_signal == null
     );
     if (activePositions.length === 0) return;
 
@@ -251,8 +251,9 @@ export class AutopilotPositionManager {
     let markets: Awaited<ReturnType<typeof fetchNbaMarkets>>;
     try {
       markets = await fetchNbaMarkets();
-    } catch {
-      return; // Will retry on next 5s poll
+    } catch (e) {
+      console.error("[TP/SL] fetchNbaMarkets failed:", e);
+      return;
     }
 
     for (const pos of activePositions) {
@@ -265,12 +266,18 @@ export class AutopilotPositionManager {
       const lastSell = this.recentSellFired.get(event_id);
       if (lastSell && Date.now() - lastSell < 45_000) continue;
 
-      // Find matching market and get current bid
+      // Find matching market and get current bid (fallback to lastPrice like fireSell does)
       const market = markets.find((m) => m.ticker === ticker);
-      if (!market?.yesBid) continue;
+      const currentBid = market?.yesBid ?? market?.lastPrice;
+      if (currentBid == null) {
+        console.warn(`[TP/SL] ${gameLabel}: No bid/lastPrice for ${ticker} (market found: ${!!market})`);
+        continue;
+      }
 
-      const currentBid = market.yesBid;
       const pnl = currentBid - entry_price;
+      console.log(
+        `[TP/SL] ${gameLabel}: bid=${(currentBid * 100).toFixed(0)}c entry=${(entry_price * 100).toFixed(0)}c pnl=${(pnl * 100).toFixed(0)}c | TP=${(settings.take_profit * 100).toFixed(0)}c SL=-${(settings.stop_loss * 100).toFixed(0)}c`
+      );
 
       // Take-profit check
       if (pnl >= settings.take_profit) {
