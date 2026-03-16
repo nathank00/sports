@@ -4,7 +4,8 @@
  * Kalshi is the source of truth. No state machine. No "pending" states.
  *
  * Entry:  signal arrives → fire buy order (30s auto-expiry) → verify via Kalshi after 30s
- * Exit:   TP/SL/late-game triggers sell → verify via Kalshi after 30s
+ *         ALSO: every 5s, re-evaluate latest signal with fresh Kalshi prices (price-check)
+ * Exit:   TP/SL triggers sell → verify via Kalshi after 30s
  * Manual: user clicks EXIT → same as above
  *
  */
@@ -18,9 +19,11 @@ import {
 } from "@/lib/kalshi-api";
 import type {
   AutopilotSignal,
+  AutopilotGame,
   AutopilotPosition,
   AutopilotSettingsV2,
   PositionItem,
+  KalshiMarket,
 } from "@/lib/types";
 
 export type LogCallback = (
@@ -51,6 +54,12 @@ export class AutopilotPositionManager {
 
   /** Events we've recently fired sells for (by event_id). Prevents re-selling. */
   private recentSellFired = new Map<string, number>();
+
+  /** Last signal ID we evaluated per game (by game_id). Resets when new signal arrives so we re-check. */
+  private lastCheckedSignalId = new Map<string, number>();
+
+  /** Tracks whether we already fired a buy for a given signal ID via the 5s price check. */
+  private priceCheckFiredSignals = new Set<number>();
 
   constructor(userId: string, onLog: LogCallback) {
     this.userId = userId;
@@ -216,21 +225,13 @@ export class AutopilotPositionManager {
     settings: AutopilotSettingsV2,
     kalshiPositions: PositionItem[],
     gameStates: Map<string, GameState>,
+    markets: KalshiMarket[],
   ): Promise<void> {
     // Work from actual Kalshi holdings
     const activeKalshi = kalshiPositions.filter(
       (kp) => kp.position > 0 && kp.ticker.startsWith("KXNBA")
     );
     if (activeKalshi.length === 0) return;
-
-    // Fetch fresh market prices (one authenticated API call for all positions)
-    let markets: Awaited<ReturnType<typeof fetchNbaMarkets>>;
-    try {
-      markets = await fetchNbaMarkets();
-    } catch (e) {
-      console.error("[TP/SL] fetchNbaMarkets failed:", e);
-      return;
-    }
 
     for (const kp of activeKalshi) {
       const { ticker } = kp;
@@ -313,6 +314,150 @@ export class AutopilotPositionManager {
         );
         await this.fireSell(posForSell, "STOP LOSS");
         continue;
+      }
+    }
+  }
+
+  // ── Entry: 5s price-check re-evaluation ──────────────────────────────
+
+  /** Friction in cents — must match backend decision.py config. */
+  private static readonly FRICTION_CENTS = 2.0;
+
+  /**
+   * Re-evaluate entry opportunities every 5s using fresh Kalshi prices.
+   *
+   * Uses the model probability from each game's latestSignal (updated every ~15s
+   * or on new play) but compares it against fresh ask prices from the markets
+   * array (fetched every 5s by the dashboard poll).
+   *
+   * This catches edge opportunities that appear between signals when market
+   * prices move favorably — the model prediction hasn't changed, but the
+   * price has moved past our threshold.
+   */
+  async checkEntryOpportunities(
+    settings: AutopilotSettingsV2,
+    games: Map<string, AutopilotGame>,
+    kalshiPositions: PositionItem[],
+    markets: KalshiMarket[],
+  ): Promise<void> {
+    const UNDERDOG_PROB_THRESHOLD = 0.20;
+
+    for (const game of games.values()) {
+      const signal = game.latestSignal;
+      if (!signal) continue;
+
+      // Need tickers and model probability to evaluate
+      const homeTicker = signal.kalshi_ticker_home;
+      const awayTicker = signal.kalshi_ticker_away;
+      if (!homeTicker && !awayTicker) continue;
+
+      const modelHomeProb = signal.blended_home_win_prob ?? signal.model_home_win_prob;
+      const modelAwayProb = 1 - modelHomeProb;
+
+      // No-trade window: last 5 minutes of Q4 or OT
+      if (signal.period >= 4 && signal.seconds_remaining < AutopilotPositionManager.NO_TRADE_SECONDS) {
+        continue;
+      }
+
+      // Skip if we already fired a buy for this exact signal via price-check
+      if (this.priceCheckFiredSignals.has(signal.id)) continue;
+
+      // Skip if evaluateSignal already processed this signal (and presumably fired or passed on non-price grounds)
+      // But ONLY skip if the signal was a BUY signal that was already handled.
+      // If it was handled but edge was too low at the time, we still want to re-check with fresh prices.
+      // So we DON'T check processedSignals here — that's the whole point.
+
+      // Check both sides for edge with fresh prices
+      let bestEdge = 0;
+      let bestTicker: string | null = null;
+      let bestSide: "HOME" | "AWAY" | null = null;
+      let bestAskPrice = 0;
+
+      for (const [ticker, modelProb, side] of [
+        [homeTicker, modelHomeProb, "HOME"] as const,
+        [awayTicker, modelAwayProb, "AWAY"] as const,
+      ]) {
+        if (!ticker) continue;
+        const market = markets.find((m) => m.ticker === ticker);
+        if (!market?.yesAsk) continue;
+
+        const edge = (modelProb - market.yesAsk) * 100 - AutopilotPositionManager.FRICTION_CENTS;
+        if (edge > bestEdge) {
+          bestEdge = edge;
+          bestTicker = ticker;
+          bestSide = side;
+          bestAskPrice = market.yesAsk;
+        }
+      }
+
+      if (!bestTicker || !bestSide || bestEdge <= 0) continue;
+
+      // Edge threshold check
+      if (bestEdge < settings.edge_threshold) continue;
+
+      // Underdog rule: require 2x edge threshold for low-probability sides
+      const sideProb = bestSide === "HOME" ? modelHomeProb : modelAwayProb;
+      if (sideProb < UNDERDOG_PROB_THRESHOLD) {
+        const underdogThreshold = settings.edge_threshold * 2;
+        if (bestEdge < underdogThreshold) continue;
+      }
+
+      // Extract event prefix
+      const eventPrefix = bestTicker.substring(0, bestTicker.lastIndexOf("-"));
+      if (!eventPrefix) continue;
+
+      // Skip if already busy (buy or sell in-flight for this game)
+      if (this.busyEvents.has(eventPrefix)) continue;
+
+      // Skip if we already own contracts on this game
+      const existing = kalshiPositions.find(
+        (p) => p.position > 0 && p.ticker.startsWith(eventPrefix)
+      );
+      if (existing) continue;
+
+      // All checks passed — fire buy
+      const gameLabel = `${signal.away_team}@${signal.home_team}`;
+      this.busyEvents.add(eventPrefix);
+      this.priceCheckFiredSignals.add(signal.id);
+
+      // Prune old priceCheckFiredSignals (keep last 500)
+      if (this.priceCheckFiredSignals.size > 500) {
+        const arr = Array.from(this.priceCheckFiredSignals);
+        for (let i = 0; i < arr.length - 500; i++) {
+          this.priceCheckFiredSignals.delete(arr[i]);
+        }
+      }
+
+      let orderFired = false;
+      try {
+        const contracts = this.computeContracts(settings, bestAskPrice);
+
+        const result = await placeOrder(bestTicker, "yes", contracts, bestAskPrice.toFixed(2), "buy");
+        orderFired = true;
+
+        this.onLog(
+          "TRADE",
+          `${gameLabel}: BUY FIRED — ${bestSide} x${contracts} @ ${(bestAskPrice * 100).toFixed(0)}c (edge ${bestEdge.toFixed(1)}%, price-check)`,
+          undefined,
+          { orderId: result.orderId, ticker: bestTicker, contracts, askPrice: bestAskPrice, edge: bestEdge, trigger: "price-check" }
+        );
+        this.writeLog(
+          "TRADE",
+          `${gameLabel}: BUY FIRED — ${bestSide} x${contracts} @ ${(bestAskPrice * 100).toFixed(0)}c (edge ${bestEdge.toFixed(1)}%, price-check)`,
+          undefined,
+          { orderId: result.orderId, ticker: bestTicker, contracts, askPrice: bestAskPrice, edge: bestEdge, trigger: "price-check" }
+        );
+
+        // Verify after 30s
+        setTimeout(() => this.verifyBuy(bestTicker!, eventPrefix, gameLabel, contracts), 30_000);
+      } catch (e) {
+        const errMsg = e instanceof Error ? e.message : String(e);
+        this.onLog("INFO", `${gameLabel}: BUY FAILED — ${errMsg}`, undefined);
+        this.writeLog("INFO", `${gameLabel}: BUY FAILED — ${errMsg}`, undefined);
+      } finally {
+        if (!orderFired) {
+          this.busyEvents.delete(eventPrefix);
+        }
       }
     }
   }

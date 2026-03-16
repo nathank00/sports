@@ -1,11 +1,15 @@
 "use client";
 
 import { useState } from "react";
-import type { AutopilotGame, AutopilotPosition, PositionItem } from "@/lib/types";
+import type { AutopilotGame, AutopilotPosition, PositionItem, KalshiMarket } from "@/lib/types";
+
+/** Friction in cents — must match backend decision.py and position manager. */
+const FRICTION_CENTS = 2.0;
 
 interface Props {
   game: AutopilotGame;
   kalshiPosition: PositionItem | null;
+  liveMarkets: KalshiMarket[];
   edgeThreshold: number;
   onManualExit: (position: AutopilotPosition) => void;
   isFinished?: boolean;
@@ -227,11 +231,13 @@ function PregameCard({
 function LiveCard({
   game,
   kalshiPosition,
+  liveMarkets,
   edgeThreshold,
   onManualExit,
 }: {
   game: AutopilotGame;
   kalshiPosition: PositionItem | null;
+  liveMarkets: KalshiMarket[];
   edgeThreshold: number;
   onManualExit: (position: AutopilotPosition) => void;
 }) {
@@ -243,24 +249,39 @@ function LiveCard({
   const awayProb = 1 - homeProb;
   const isBlended = s.blended_home_win_prob != null;
 
-  // Use freshest Kalshi prices: game-level (from API poll every 30s) → signal-level (from backend)
-  const kalshiHomePrice = game.kalshiHomePrice ?? s.kalshi_home_price;
-  const kalshiAwayPrice = game.kalshiAwayPrice ?? s.kalshi_away_price;
+  // Use live market prices (5s poll) → game-level (30s poll) → signal-level (backend) as fallback chain
+  const liveHomeMarket = s.kalshi_ticker_home ? liveMarkets.find((m) => m.ticker === s.kalshi_ticker_home) : null;
+  const liveAwayMarket = s.kalshi_ticker_away ? liveMarkets.find((m) => m.ticker === s.kalshi_ticker_away) : null;
+  const kalshiHomePrice = liveHomeMarket?.yesAsk ?? game.kalshiHomePrice ?? s.kalshi_home_price;
+  const kalshiAwayPrice = liveAwayMarket?.yesAsk ?? game.kalshiAwayPrice ?? s.kalshi_away_price;
 
-  // Apply user's edge threshold + underdog rule to determine displayed action.
-  // Backend recommends BUY for any positive edge; frontend enforces user thresholds.
+  // Compute live edge using fresh prices + model probability (with friction deduction)
+  // This mirrors the edge calculation in checkEntryOpportunities
   const UNDERDOG_PROB_THRESHOLD = 0.20;
   const displayedAction = (() => {
-    if (s.recommended_action === "NO_TRADE") return "NO_TRADE";
-    if (s.edge_vs_kalshi == null) return s.recommended_action;
-    // Basic edge threshold
-    if (s.edge_vs_kalshi < edgeThreshold) return "NO_TRADE";
-    // Underdog rule: 2x threshold for sides with <20% model probability
-    const sideProb = s.recommended_action === "BUY_HOME" ? homeProb : awayProb;
-    if (sideProb < UNDERDOG_PROB_THRESHOLD && s.edge_vs_kalshi < edgeThreshold * 2) {
-      return "NO_TRADE";
+    // Compute edge for both sides with fresh prices
+    const homeEdge = kalshiHomePrice != null ? (homeProb - kalshiHomePrice) * 100 - FRICTION_CENTS : null;
+    const awayEdge = kalshiAwayPrice != null ? (awayProb - kalshiAwayPrice) * 100 - FRICTION_CENTS : null;
+
+    // Find best side
+    let bestEdge: number | null = null;
+    let bestSide: "BUY_HOME" | "BUY_AWAY" | null = null;
+    if (homeEdge != null && homeEdge > 0 && (bestEdge == null || homeEdge > bestEdge)) {
+      bestEdge = homeEdge;
+      bestSide = "BUY_HOME";
     }
-    return s.recommended_action;
+    if (awayEdge != null && awayEdge > 0 && (bestEdge == null || awayEdge > bestEdge)) {
+      bestEdge = awayEdge;
+      bestSide = "BUY_AWAY";
+    }
+
+    if (bestSide == null || bestEdge == null || bestEdge < edgeThreshold) return "NO_TRADE";
+
+    // Underdog rule
+    const sideProb = bestSide === "BUY_HOME" ? homeProb : awayProb;
+    if (sideProb < UNDERDOG_PROB_THRESHOLD && bestEdge < edgeThreshold * 2) return "NO_TRADE";
+
+    return bestSide;
   })();
 
   return (
@@ -306,32 +327,33 @@ function LiveCard({
         </div>
       </div>
 
-      {/* Edge summary: best-edge side → team, model %, kalshi ask, net edge */}
+      {/* Edge summary: best-edge side → team, model %, kalshi ask, net edge (computed from live prices) */}
       {(() => {
-        // Determine which side to display
+        // Determine which side to display using live prices
         let edgeTeam: string;
         let edgeModelProb: number;
         let edgeKalshiAsk: number | null;
 
-        if (s.recommended_action === "BUY_HOME") {
+        // Compute edge for both sides with fresh prices
+        const homeEdge =
+          kalshiHomePrice != null
+            ? (homeProb - kalshiHomePrice) * 100 - FRICTION_CENTS
+            : -Infinity;
+        const awayEdge =
+          kalshiAwayPrice != null
+            ? (awayProb - kalshiAwayPrice) * 100 - FRICTION_CENTS
+            : -Infinity;
+
+        if (displayedAction === "BUY_HOME") {
           edgeTeam = s.home_team;
           edgeModelProb = homeProb;
           edgeKalshiAsk = kalshiHomePrice;
-        } else if (s.recommended_action === "BUY_AWAY") {
+        } else if (displayedAction === "BUY_AWAY") {
           edgeTeam = s.away_team;
           edgeModelProb = awayProb;
           edgeKalshiAsk = kalshiAwayPrice;
         } else {
-          // NO_TRADE — pick the side with better edge
-          const homeEdge =
-            kalshiHomePrice != null
-              ? (homeProb - kalshiHomePrice) * 100 - 2
-              : -Infinity;
-          const awayEdge =
-            kalshiAwayPrice != null
-              ? (awayProb - kalshiAwayPrice) * 100 - 2
-              : -Infinity;
-
+          // NO_TRADE — pick the side with better edge for display
           if (homeEdge >= awayEdge) {
             edgeTeam = s.home_team;
             edgeModelProb = homeProb;
@@ -345,7 +367,7 @@ function LiveCard({
 
         const netEdge =
           edgeKalshiAsk != null
-            ? (edgeModelProb - edgeKalshiAsk) * 100 - 2
+            ? (edgeModelProb - edgeKalshiAsk) * 100 - FRICTION_CENTS
             : null;
 
         const isBuy = displayedAction !== "NO_TRADE";
@@ -425,14 +447,14 @@ function LiveCard({
         </div>
       )}
 
-      {/* Position section — derived from Kalshi */}
+      {/* Position section — derived from Kalshi (use live bid for unrealized P&L) */}
       {kalshiPosition && kalshiPosition.position > 0 && (
         <PositionSection
           kalshiPosition={kalshiPosition}
           homeTeam={game.homeTeam}
           awayTeam={game.awayTeam}
-          currentHomePrice={kalshiHomePrice}
-          currentAwayPrice={kalshiAwayPrice}
+          currentHomePrice={liveHomeMarket?.yesBid ?? kalshiHomePrice}
+          currentAwayPrice={liveAwayMarket?.yesBid ?? kalshiAwayPrice}
           onManualExit={onManualExit}
         />
       )}
@@ -561,6 +583,7 @@ function FinishedCard({
 export default function AutopilotGameCard({
   game,
   kalshiPosition,
+  liveMarkets,
   edgeThreshold,
   onManualExit,
   isFinished,
@@ -579,6 +602,7 @@ export default function AutopilotGameCard({
       <LiveCard
         game={game}
         kalshiPosition={kalshiPosition}
+        liveMarkets={liveMarkets}
         edgeThreshold={edgeThreshold}
         onManualExit={onManualExit}
       />

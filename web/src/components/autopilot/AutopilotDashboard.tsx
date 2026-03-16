@@ -3,7 +3,8 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { supabase } from "@/lib/supabase";
 import { hasKalshiKeys } from "@/lib/kalshi-crypto";
-import { fetchPositions } from "@/lib/kalshi-api";
+import { fetchPositions, fetchNbaMarkets } from "@/lib/kalshi-api";
+import type { KalshiMarket } from "@/lib/types";
 import { AutopilotPositionManager, type GameState } from "@/lib/autopilot-position-manager";
 import AutopilotGameCard from "./AutopilotGameCard";
 import type {
@@ -109,6 +110,8 @@ export default function AutopilotDashboard({ userId }: Props) {
 
   // Kalshi positions — source of truth, polled every 5s
   const [kalshiPositions, setKalshiPositions] = useState<PositionItem[]>([]);
+  // Kalshi markets — fresh prices polled every 5s for TP/SL + entry checks + UI display
+  const [liveMarkets, setLiveMarkets] = useState<KalshiMarket[]>([]);
 
   const positionManagerRef = useRef<AutopilotPositionManager | null>(null);
   // Ref to always call the latest handleNewSignal from the Supabase subscription
@@ -229,20 +232,26 @@ export default function AutopilotDashboard({ userId }: Props) {
     loadSettings();
   }, [userId]);
 
-  // ── Poll Kalshi positions every 5s + run TP/SL + late-game exits ────
+  // ── Poll Kalshi positions + markets every 5s → TP/SL exits + entry checks ──
 
   useEffect(() => {
     const poll = async () => {
+      // Fetch positions and markets in parallel (single cycle, two API calls)
+      let positions: PositionItem[];
+      let markets: KalshiMarket[];
       try {
-        const positions = await fetchPositions();
+        [positions, markets] = await Promise.all([
+          fetchPositions(),
+          fetchNbaMarkets(),
+        ]);
         setKalshiPositions(positions);
         kalshiPositionsRef.current = positions;
+        setLiveMarkets(markets);
       } catch {
         // Silently fail — will retry in 5s
         return;
       }
 
-      // TP/SL + late-game exit checking — runs on every Kalshi poll
       const currentSettings = settingsRef.current;
       if (currentSettings?.auto_execute_enabled && positionManagerRef.current) {
         // Build gameStates map from current games (keyed by team abbreviation)
@@ -260,10 +269,18 @@ export default function AutopilotDashboard({ userId }: Props) {
           }
         }
 
+        // Run exit checks (TP/SL) and entry checks with the same fresh markets
         await positionManagerRef.current.checkAutoExits(
           currentSettings,
           kalshiPositionsRef.current,
           gameStates,
+          markets,
+        );
+        await positionManagerRef.current.checkEntryOpportunities(
+          currentSettings,
+          gamesRef.current,
+          kalshiPositionsRef.current,
+          markets,
         );
       }
     };
@@ -1120,6 +1137,7 @@ export default function AutopilotDashboard({ userId }: Props) {
                 key={game.gameId}
                 game={game}
                 kalshiPosition={getKalshiPositionForGame(game)}
+                liveMarkets={liveMarkets}
                 edgeThreshold={effectiveSettings.edge_threshold}
                 onManualExit={handleManualExit}
                 isFinished={isGameFinished(game)}
