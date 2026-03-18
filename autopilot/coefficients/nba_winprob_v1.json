@@ -1,6 +1,6 @@
 {
   "version": "nba_winprob_v1",
-  "trained_at": "2026-03-17T16:11:02.289184+00:00",
+  "trained_at": "2026-03-18T16:12:27.805128+00:00",
   "features": [
     "score_margin",
     "time_fraction",
@@ -22,86 +22,86 @@
     "margin_x_time",
     "spread_x_time"
   ],
-  "intercept": -0.027089,
+  "intercept": -0.026944,
   "coefficients": [
-    0.260524,
-    -0.038133,
-    0.006781,
-    -0.035738,
-    -0.051628,
-    -0.028248,
-    0.002392,
-    -0.001756,
-    -0.000832,
-    0.000726,
-    -3.7e-05,
-    -0.025206,
-    0.026023,
+    0.260246,
+    -0.039434,
+    0.008399,
+    -0.034837,
+    -0.051859,
+    -0.032599,
+    0.002454,
+    -0.001734,
+    -0.00084,
+    0.000668,
+    -2e-05,
+    -0.026224,
+    0.026965,
     0.0,
     0.0,
-    -0.012472,
-    0.006511,
-    -0.264502,
-    -0.086936
+    -0.012982,
+    0.007011,
+    -0.264244,
+    -0.086784
   ],
   "evaluation": {
-    "test_samples": 103887,
-    "brier_score": 0.1463,
-    "log_loss": 0.4419,
-    "roc_auc": 0.869,
-    "accuracy": 0.782,
-    "home_win_rate_actual": 0.5575,
-    "home_win_rate_predicted": 0.5481,
+    "test_samples": 104048,
+    "brier_score": 0.1459,
+    "log_loss": 0.4407,
+    "roc_auc": 0.8699,
+    "accuracy": 0.7826,
+    "home_win_rate_actual": 0.5551,
+    "home_win_rate_predicted": 0.548,
     "calibration": {
       "0.0-0.1": {
         "predicted_mean": 0.0374,
-        "actual_mean": 0.0299,
-        "count": 11586
+        "actual_mean": 0.0287,
+        "count": 11654
       },
       "0.1-0.2": {
-        "predicted_mean": 0.149,
-        "actual_mean": 0.1325,
-        "count": 7924
+        "predicted_mean": 0.1492,
+        "actual_mean": 0.1285,
+        "count": 7909
       },
       "0.2-0.3": {
         "predicted_mean": 0.2505,
-        "actual_mean": 0.2649,
-        "count": 8218
+        "actual_mean": 0.2589,
+        "count": 8191
       },
       "0.3-0.4": {
-        "predicted_mean": 0.3501,
-        "actual_mean": 0.3639,
-        "count": 8469
+        "predicted_mean": 0.35,
+        "actual_mean": 0.3595,
+        "count": 8451
       },
       "0.4-0.5": {
         "predicted_mean": 0.4526,
-        "actual_mean": 0.4761,
-        "count": 9210
+        "actual_mean": 0.4739,
+        "count": 9308
       },
       "0.5-0.6": {
-        "predicted_mean": 0.5485,
-        "actual_mean": 0.5898,
-        "count": 9046
+        "predicted_mean": 0.5482,
+        "actual_mean": 0.588,
+        "count": 9134
       },
       "0.6-0.7": {
         "predicted_mean": 0.6506,
-        "actual_mean": 0.6724,
-        "count": 9427
+        "actual_mean": 0.6681,
+        "count": 9374
       },
       "0.7-0.8": {
         "predicted_mean": 0.7508,
-        "actual_mean": 0.7429,
-        "count": 10155
+        "actual_mean": 0.7411,
+        "count": 10116
       },
       "0.8-0.9": {
-        "predicted_mean": 0.8507,
-        "actual_mean": 0.8552,
-        "count": 11699
+        "predicted_mean": 0.8509,
+        "actual_mean": 0.8545,
+        "count": 11674
       },
       "0.9-1.0": {
         "predicted_mean": 0.9622,
-        "actual_mean": 0.9723,
-        "count": 18153
+        "actual_mean": 0.9724,
+        "count": 18237
       }
     }
   }
