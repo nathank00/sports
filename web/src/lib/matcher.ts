@@ -1,6 +1,21 @@
 import type { KalshiMarket, MatchedGame } from "./types";
 
 /**
+ * Convert a GAME_DATE string (e.g. "20250325" or "2025-03-25") to
+ * the Kalshi ticker date fragment (e.g. "25MAR25").
+ */
+function gameDateToKalshiDate(gameDate: string): string {
+  // Normalize: strip dashes if present
+  const clean = gameDate.replace(/-/g, "");
+  // Format: YYYYMMDD
+  const year = clean.substring(2, 4);       // "25"
+  const monthIdx = parseInt(clean.substring(4, 6), 10) - 1;
+  const day = clean.substring(6, 8);        // "25"
+  const months = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
+  return `${day}${months[monthIdx]}${year}`;
+}
+
+/**
  * Prediction data from Supabase (gamelogs table).
  * Uses the same column names as the database.
  */
@@ -140,13 +155,19 @@ export function matchPredictionsToMarkets(
         ? pred.PREDICTION_PCT
         : 1.0 - pred.PREDICTION_PCT;
 
+    // Derive Kalshi date from prediction's game date
+    const kalshiDate = gameDateToKalshiDate(pred.GAME_DATE);
+
     // Find the matching market
     for (const market of markets) {
       const eventTicker = market.eventTicker;
       const tickerSuffix = tickerTeamSuffix(market.ticker);
 
-      // Check that this event involves both teams
+      // Check that this event involves both teams AND matches today's date
       if (!eventTicker.includes(homeAbbr) || !eventTicker.includes(awayAbbr)) {
+        continue;
+      }
+      if (!eventTicker.includes(kalshiDate)) {
         continue;
       }
 
@@ -213,11 +234,18 @@ export function matchMlbPredictionsToMarkets(
         ? pred.PREDICTION_PCT
         : 1.0 - pred.PREDICTION_PCT;
 
+    // Derive Kalshi date from prediction's game date
+    const kalshiDate = gameDateToKalshiDate(pred.GAME_DATE);
+
     for (const market of markets) {
       const eventTicker = market.eventTicker;
       const tickerSuffix = tickerTeamSuffix(market.ticker);
 
+      // Check that this event involves both teams AND matches today's date
       if (!eventTicker.includes(homeAbbr) || !eventTicker.includes(awayAbbr)) {
+        continue;
+      }
+      if (!eventTicker.includes(kalshiDate)) {
         continue;
       }
 

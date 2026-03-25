@@ -450,12 +450,20 @@ export default function AutopilotDashboard({ userId }: Props) {
     const pollSignals = async () => {
       const since = latestSignalTsRef.current || getGameDayCutoffUTC();
       try {
-        const { data } = await supabase
+        let query = supabase
           .from("autopilot_signals")
           .select("*")
           .gt("created_at", since)
           .order("created_at", { ascending: true })
           .limit(100);
+
+        if (activeSport === "mlb") {
+          query = query.eq("sport", "mlb");
+        } else {
+          query = query.or("sport.is.null,sport.eq.nba");
+        }
+
+        const { data } = await query;
 
         if (data && data.length > 0) {
           for (const signal of data as AutopilotSignal[]) {
@@ -548,12 +556,22 @@ export default function AutopilotDashboard({ userId }: Props) {
     setLoading(true);
     try {
       const cutoff = getGameDayCutoffUTC();
-      const { data, error } = await supabase
+      // Filter by sport: NBA signals have sport=null (legacy), MLB signals have sport="mlb"
+      let query = supabase
         .from("autopilot_signals")
         .select("*")
         .gte("created_at", cutoff)
         .order("created_at", { ascending: false })
         .limit(500);
+
+      if (activeSport === "mlb") {
+        query = query.eq("sport", "mlb");
+      } else {
+        // NBA: sport is null (legacy) or "nba"
+        query = query.or("sport.is.null,sport.eq.nba");
+      }
+
+      const { data, error } = await query;
 
       if (error) {
         console.error("Failed to fetch signals:", error);

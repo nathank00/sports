@@ -13,6 +13,7 @@ from autopilot.src.trading.decision import (
     TradeSignal,
     _extract_yes_ask,
     _extract_yes_bid,
+    _today_kalshi_date,
 )
 
 # MLB team full name → Kalshi ticker abbreviation.
@@ -69,16 +70,23 @@ def mlb_match_markets(
     home_team: str,
     away_team: str,
     markets: list[dict],
+    date_str: str | None = None,
 ) -> tuple[dict | None, dict | None]:
     """Find Kalshi markets for a given MLB game matchup.
 
     Returns (home_market, away_market) where each is a market dict or None.
+
+    date_str: Kalshi date fragment (e.g. "25MAR25") to filter by. If None,
+    defaults to today's date in ET.
     """
     home_abbr = MLB_TEAM_ABBR_MAP.get(home_team)
     away_abbr = MLB_TEAM_ABBR_MAP.get(away_team)
 
     if not home_abbr or not away_abbr:
         return None, None
+
+    if date_str is None:
+        date_str = _today_kalshi_date()
 
     home_market = None
     away_market = None
@@ -87,8 +95,10 @@ def mlb_match_markets(
         event_ticker = market.get("event_ticker") or market.get("eventTicker", "")
         ticker = market.get("ticker", "")
 
-        # Event must involve both teams
+        # Event must involve both teams AND match today's date
         if home_abbr not in event_ticker or away_abbr not in event_ticker:
+            continue
+        if date_str not in event_ticker:
             continue
 
         # Identify which team this market's YES side represents
@@ -235,6 +245,10 @@ def mlb_evaluate_signal(
         if valid_edges:
             display_edge = max(valid_edges)
 
+    # Extract full tickers for frontend position matching
+    home_ticker = home_market.get("ticker") if home_market else None
+    away_ticker = away_market.get("ticker") if away_market else None
+
     return TradeSignal(
         recommended_action=best_action,
         reason=reason,
@@ -246,4 +260,6 @@ def mlb_evaluate_signal(
         kalshi_away_price=away_ask,
         kalshi_home_bid=home_bid,
         kalshi_away_bid=away_bid,
+        kalshi_ticker_home=home_ticker,
+        kalshi_ticker_away=away_ticker,
     )

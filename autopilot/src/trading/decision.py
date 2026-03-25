@@ -75,23 +75,45 @@ class TradeSignal:
     kalshi_away_price: float | None = None  # away YES ask
     kalshi_home_bid: float | None = None    # home YES bid (for spread visibility)
     kalshi_away_bid: float | None = None    # away YES bid
+    kalshi_ticker_home: str | None = None   # full home ticker (e.g. KXMLBGAME-25MAR25SFNYY-SF)
+    kalshi_ticker_away: str | None = None   # full away ticker
+
+
+def _today_kalshi_date() -> str:
+    """Return today's date as a Kalshi ticker date fragment, e.g. '25MAR25'.
+
+    Uses US Eastern time since that's when Kalshi game dates roll over.
+    """
+    from datetime import datetime, timezone, timedelta
+    et = timezone(timedelta(hours=-4))  # EDT
+    now = datetime.now(et)
+    months = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"]
+    return f"{now.day:02d}{months[now.month - 1]}{now.year % 100:02d}"
 
 
 def match_markets(
     home_team: str,
     away_team: str,
     markets: list[dict],
+    date_str: str | None = None,
 ) -> tuple[dict | None, dict | None]:
     """Find Kalshi markets for a given game matchup.
 
     Returns (home_market, away_market) where each is a market dict or None.
     Ported from web/src/lib/matcher.ts matchPredictionsToMarkets().
+
+    date_str: Kalshi date fragment (e.g. "25MAR25") to filter by. If None,
+    defaults to today's date in ET. This prevents matching tomorrow's game
+    when the same teams play on consecutive days.
     """
     home_abbr = TEAM_ABBR_MAP.get(home_team)
     away_abbr = TEAM_ABBR_MAP.get(away_team)
 
     if not home_abbr or not away_abbr:
         return None, None
+
+    if date_str is None:
+        date_str = _today_kalshi_date()
 
     home_market = None
     away_market = None
@@ -100,8 +122,10 @@ def match_markets(
         event_ticker = market.get("event_ticker") or market.get("eventTicker", "")
         ticker = market.get("ticker", "")
 
-        # Event must involve both teams
+        # Event must involve both teams AND match today's date
         if home_abbr not in event_ticker or away_abbr not in event_ticker:
+            continue
+        if date_str not in event_ticker:
             continue
 
         # Identify which team this market's YES side represents
@@ -258,6 +282,10 @@ def evaluate_signal(
         if valid_edges:
             display_edge = max(valid_edges)
 
+    # Extract full tickers for frontend position matching
+    home_ticker = home_market.get("ticker") if home_market else None
+    away_ticker = away_market.get("ticker") if away_market else None
+
     return TradeSignal(
         recommended_action=best_action,
         reason=reason,
@@ -269,6 +297,8 @@ def evaluate_signal(
         kalshi_away_price=away_ask,
         kalshi_home_bid=home_bid,
         kalshi_away_bid=away_bid,
+        kalshi_ticker_home=home_ticker,
+        kalshi_ticker_away=away_ticker,
     )
 
 
