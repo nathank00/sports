@@ -722,12 +722,24 @@ export default function AutopilotDashboard({ userId }: Props) {
         }
       }
 
-      // Fallback: match by team abbreviation in ticker
+      // Fallback: match by team abbreviation AND game date in ticker
+      // Kalshi tickers embed the date (e.g., KXMLBGAME-25MAR25SFNYY-SF)
+      // so we must match the date to avoid grabbing tomorrow's position
       const homeAbbr = game.homeTeam;
       const awayAbbr = game.awayTeam;
+      let dateStr = "";
+      if (game.startTime) {
+        const d = new Date(game.startTime);
+        const day = d.getUTCDate().toString().padStart(2, "0");
+        const months = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
+        const mon = months[d.getUTCMonth()];
+        const yr = (d.getUTCFullYear() % 100).toString().padStart(2, "0");
+        dateStr = `${day}${mon}${yr}`;
+      }
       const match = kalshiPositions.find(
         (p) => p.position > 0 && p.ticker.startsWith(sportConfig.tickerPrefix) &&
-          (p.ticker.includes(homeAbbr) || p.ticker.includes(awayAbbr))
+          (p.ticker.includes(homeAbbr) || p.ticker.includes(awayAbbr)) &&
+          (dateStr ? p.ticker.includes(dateStr) : true)
       );
       return match || null;
     },
