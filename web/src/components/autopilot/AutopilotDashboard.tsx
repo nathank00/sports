@@ -441,7 +441,7 @@ export default function AutopilotDashboard({ userId }: Props) {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, []);
+  }, [activeSport]);
 
   // ── Signal polling fallback (in case Realtime subscription isn't working) ──
 
@@ -468,7 +468,7 @@ export default function AutopilotDashboard({ userId }: Props) {
 
     const interval = setInterval(pollSignals, 15_000);
     return () => clearInterval(interval);
-  }, []);
+  }, [activeSport]);
 
   // ── Poll backend heartbeat every 10s ──────────────────────────────
   useEffect(() => {
@@ -497,7 +497,7 @@ export default function AutopilotDashboard({ userId }: Props) {
     checkHeartbeat();
     const interval = setInterval(checkHeartbeat, 10_000);
     return () => clearInterval(interval);
-  }, []);
+  }, [activeSport]);
 
   const fetchScheduledGames = async () => {
     try {
