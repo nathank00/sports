@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- Negative space E cut from a solid rounded square -->
+  <rect width="256" height="256" rx="48" fill="#e5e5e5"/>
+  <g fill="#0a0a0a">
+    <!-- Cut-outs to form E shape -->
+    <rect x="96" y="68" width="120" height="40" rx="4"/>
+    <rect x="96" y="148" width="120" height="40" rx="4"/>
+  </g>
+</svg>

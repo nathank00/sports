@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- Monoline E with rounded corners, minimal stroke style -->
+  <rect width="256" height="256" rx="48" fill="#0a0a0a"/>
+  <path d="M168,56 L80,56 L80,200 L168,200 M80,128 L152,128"
+        stroke="#e5e5e5" stroke-width="18" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>

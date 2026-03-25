@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- Diagonal slash E — modern tech/fintech style -->
+  <rect width="256" height="256" rx="48" fill="#0a0a0a"/>
+  <g fill="none" stroke="#e5e5e5" stroke-width="16" stroke-linecap="round">
+    <!-- Diagonal backbone -->
+    <line x1="80" y1="200" x2="140" y2="56"/>
+    <!-- Three horizontal bars intersecting the diagonal -->
+    <line x1="108" y1="56" x2="188" y2="56"/>
+    <line x1="94" y1="128" x2="172" y2="128"/>
+    <line x1="80" y1="200" x2="188" y2="200"/>
+  </g>
+</svg>

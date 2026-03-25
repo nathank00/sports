@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- Stacked chevrons pointing right — inspired by the isometric logo -->
+  <rect width="256" height="256" rx="48" fill="#0a0a0a"/>
+  <g fill="none" stroke="#e5e5e5" stroke-width="16" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="72,52 164,52 196,80 164,108 72,108"/>
+    <line x1="72" y1="52" x2="72" y2="108"/>
+    <polyline points="72,100 164,100 196,128 164,156 72,156"/>
+    <line x1="72" y1="100" x2="72" y2="156"/>
+    <polyline points="72,148 164,148 196,176 164,204 72,204"/>
+    <line x1="72" y1="148" x2="72" y2="204"/>
+  </g>
+</svg>
