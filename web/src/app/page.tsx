@@ -1,7 +1,75 @@
 import Link from "next/link";
 import ParticleMesh from "@/components/ParticleMesh";
+import { createServerClient } from "@/lib/supabase-server";
 
-export default function Home() {
+async function fetchModelStats() {
+  const supabase = await createServerClient();
+  const currentYear = new Date().getFullYear();
+
+  // Fetch NBA + MLB records in parallel
+  const [nbaAll, mlbAll, nbaCurrent, mlbCurrent] = await Promise.all([
+    supabase
+      .from("gamelogs")
+      .select("PREDICTION,GAME_OUTCOME")
+      .not("PREDICTION", "is", null)
+      .not("GAME_OUTCOME", "is", null)
+      .limit(50000),
+    supabase
+      .from("mlb_gamelogs")
+      .select("PREDICTION,GAME_OUTCOME")
+      .not("PREDICTION", "is", null)
+      .not("GAME_OUTCOME", "is", null)
+      .limit(50000),
+    supabase
+      .from("gamelogs")
+      .select("PREDICTION,GAME_OUTCOME")
+      .not("PREDICTION", "is", null)
+      .not("GAME_OUTCOME", "is", null)
+      .gte("GAME_DATE", `${currentYear}-01-01`)
+      .limit(50000),
+    supabase
+      .from("mlb_gamelogs")
+      .select("PREDICTION,GAME_OUTCOME")
+      .not("PREDICTION", "is", null)
+      .not("GAME_OUTCOME", "is", null)
+      .gte("GAME_DATE", `${currentYear}-01-01`)
+      .limit(50000),
+  ]);
+
+  const count = (rows: { PREDICTION: number; GAME_OUTCOME: number }[] | null) => {
+    if (!rows) return { wins: 0, total: 0 };
+    let wins = 0;
+    for (const r of rows) {
+      if (r.PREDICTION === r.GAME_OUTCOME) wins++;
+    }
+    return { wins, total: rows.length };
+  };
+
+  const allNba = count(nbaAll.data as { PREDICTION: number; GAME_OUTCOME: number }[] | null);
+  const allMlb = count(mlbAll.data as { PREDICTION: number; GAME_OUTCOME: number }[] | null);
+  const curNba = count(nbaCurrent.data as { PREDICTION: number; GAME_OUTCOME: number }[] | null);
+  const curMlb = count(mlbCurrent.data as { PREDICTION: number; GAME_OUTCOME: number }[] | null);
+
+  const allTime = {
+    wins: allNba.wins + allMlb.wins,
+    total: allNba.total + allMlb.total,
+  };
+  const current = {
+    wins: curNba.wins + curMlb.wins,
+    total: curNba.total + curMlb.total,
+  };
+
+  return {
+    allTimePct: allTime.total > 0 ? Math.round((allTime.wins / allTime.total) * 100) : null,
+    allTimeTotal: allTime.total,
+    currentPct: current.total > 0 ? Math.round((current.wins / current.total) * 100) : null,
+    currentTotal: current.total,
+    currentYear,
+  };
+}
+
+export default async function Home() {
+  const stats = await fetchModelStats();
   return (
     <div
       className="relative -mt-8"
@@ -26,9 +94,9 @@ export default function Home() {
           <p className="mx-auto mb-14 flex items-center justify-center gap-3 text-sm tracking-wide text-neutral-400 md:gap-4 md:text-base">
             <span>Live Probability Models</span>
             <span className="text-neutral-700">|</span>
-            <span>Computed Edge</span>
+            <span>Market Edge Discovery</span>
             <span className="text-neutral-700">|</span>
-            <span>Disciplined Execution on Kalshi</span>
+            <span>Autonomous Execution</span>
           </p>
           <Link
             href="/signals"
@@ -184,12 +252,33 @@ export default function Home() {
           ═══════════════════════════════════════════════ */}
       <section>
         <div className="mx-auto max-w-2xl px-6 py-24 text-center md:py-28">
-          <h2 className="mb-4 text-2xl font-semibold tracking-tight text-white md:text-3xl">
+          <h2 className="mb-6 text-2xl font-semibold tracking-tight text-white md:text-3xl">
             The signal is live.
           </h2>
-          <p className="mb-10 text-sm text-neutral-500">
-            Models update daily. The edge won&apos;t wait.
-          </p>
+
+          {/* Performance stats */}
+          <div className="mb-10 flex items-center justify-center gap-8">
+            {stats.allTimePct != null && (
+              <div className="text-center">
+                <div className="text-3xl font-bold text-white md:text-4xl">
+                  {stats.allTimePct}%
+                </div>
+                <div className="mt-1 text-[11px] uppercase tracking-wider text-neutral-600">
+                  All-time ({stats.allTimeTotal.toLocaleString()} picks)
+                </div>
+              </div>
+            )}
+            {stats.currentPct != null && stats.currentTotal > 0 && (
+              <div className="text-center">
+                <div className="text-3xl font-bold text-white md:text-4xl">
+                  {stats.currentPct}%
+                </div>
+                <div className="mt-1 text-[11px] uppercase tracking-wider text-neutral-600">
+                  {stats.currentYear} ({stats.currentTotal.toLocaleString()} picks)
+                </div>
+              </div>
+            )}
+          </div>
           <Link
             href="/signals"
             className="group inline-flex items-center gap-2.5 rounded-full bg-white px-8 py-3.5 text-sm font-medium tracking-wide text-neutral-950 transition-all hover:scale-[1.02] hover:bg-neutral-200"

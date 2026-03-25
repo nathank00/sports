@@ -8,6 +8,7 @@ import DatePicker from "./DatePicker";
 import PredictionCard from "./PredictionCard";
 import MlbPredictionCard from "./MlbPredictionCard";
 import RecordBadge from "./RecordBadge";
+import InfoTooltip from "./InfoTooltip";
 
 type Sport = "all" | "nba" | "mlb";
 
@@ -159,9 +160,18 @@ export default function SignalsDashboard() {
       {/* ── Header ── */}
       <div className="mb-8 flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="font-mono text-2xl font-bold tracking-wider text-white">
-            Signals
-          </h1>
+          <div className="flex items-center gap-2">
+            <h1 className="font-mono text-2xl font-bold tracking-wider text-white">
+              Signals
+            </h1>
+            <InfoTooltip>
+              <p className="text-neutral-200 font-medium mb-2">Pregame Win Probability Models</p>
+              <p>Supervised ensemble classifiers built on gradient-boosted decision tree architectures with L1/L2 regularization, subsampled column splits, and monotonic constraints on key features. Trained on multi-season historical data with strict chronological train/test separation — no future information leakage. Hyperparameters are tuned via cross-validated grid search over learning rate, tree depth, and minimum leaf weights. Output is a calibrated win probability, not a binary classification, enabling direct comparison against market-implied prices for edge computation. Models are validated out-of-sample across held-out seasons before deployment.</p>
+              <p className="mt-2"><span className="text-neutral-200">NBA</span> — Team-level rolling statistical composites across offensive and defensive box score categories, computed over multiple time horizons. Home/away differential features capture matchup asymmetry. The feature space encodes scoring efficiency, rebounding, turnover tendencies, and pace dynamics.</p>
+              <p className="mt-2"><span className="text-neutral-200">MLB</span> — Lineup-aware architecture that constructs position-weighted batter composites from individual rolling statistics across multiple game windows. Starting pitcher matchups are modeled independently from bullpen tendencies. The resulting 108-dimensional feature space captures batting, pitching, and situational context at granular resolution.</p>
+              <p className="mt-2 text-neutral-500">Both models retrain daily on an expanding corpus and are promoted only when performance improves. Predictions generate automatically once lineups are confirmed and are compared against live Kalshi contract prices to surface mispriced markets.</p>
+            </InfoTooltip>
+          </div>
           <p className="mt-1 text-xs tracking-wide text-neutral-600">
             Daily pregame predictions across all sports
           </p>
