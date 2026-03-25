@@ -745,14 +745,17 @@ export default function AutopilotDashboard({ userId }: Props) {
       // so we must match the date to avoid grabbing tomorrow's position
       const homeAbbr = game.homeTeam;
       const awayAbbr = game.awayTeam;
+      // Derive Kalshi date (YYMMMDD) from game start time in US Eastern
       let dateStr = "";
       if (game.startTime) {
-        const d = new Date(game.startTime);
-        const day = d.getUTCDate().toString().padStart(2, "0");
+        const etStr = new Date(game.startTime).toLocaleDateString("en-CA", {
+          timeZone: "America/New_York",
+        });
+        const [yyyy, mm, dd] = etStr.split("-");
         const months = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
-        const mon = months[d.getUTCMonth()];
-        const yr = (d.getUTCFullYear() % 100).toString().padStart(2, "0");
-        dateStr = `${yr}${mon}${day}`;
+        const yr = yyyy.substring(2);
+        const mon = months[parseInt(mm, 10) - 1];
+        dateStr = `${yr}${mon}${dd}`;
       }
       const match = kalshiPositions.find(
         (p) => p.position > 0 && p.ticker.startsWith(sportConfig.tickerPrefix) &&

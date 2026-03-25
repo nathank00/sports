@@ -169,14 +169,17 @@ export async function GET() {
       const MONTHS = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
 
       for (const game of games) {
-        // Derive Kalshi date fragment from the game's start time (format: YYMMMDD)
+        // Derive Kalshi date fragment from the game's start time (in US Eastern)
+        // ESPN returns UTC times, but Kalshi dates use the US Eastern date
         let gameDateStr = "";
         if (game.startTime) {
-          const d = new Date(game.startTime);
-          const day = d.getUTCDate().toString().padStart(2, "0");
-          const mon = MONTHS[d.getUTCMonth()];
-          const yr = (d.getUTCFullYear() % 100).toString().padStart(2, "0");
-          gameDateStr = `${yr}${mon}${day}`;
+          const etStr = new Date(game.startTime).toLocaleDateString("en-CA", {
+            timeZone: "America/New_York",
+          }); // "2026-03-25"
+          const [yyyy, mm, dd] = etStr.split("-");
+          const yr = yyyy.substring(2);
+          const mon = MONTHS[parseInt(mm, 10) - 1];
+          gameDateStr = `${yr}${mon}${dd}`;
         }
 
         for (const market of markets) {
