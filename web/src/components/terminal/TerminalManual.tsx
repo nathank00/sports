@@ -2,9 +2,9 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
-import { fetchNbaMarkets } from "@/lib/kalshi-api";
+import { fetchNbaMarkets, fetchMlbMarkets } from "@/lib/kalshi-api";
 import { hasKalshiKeys } from "@/lib/kalshi-crypto";
-import { matchPredictionsToMarkets, type Prediction } from "@/lib/matcher";
+import { matchPredictionsToMarkets, matchMlbPredictionsToMarkets, type Prediction } from "@/lib/matcher";
 import { loadTerminalSettings } from "@/lib/terminal-settings";
 import { getTodayEastern, toGameDate } from "@/lib/dates";
 import type { MatchedGame, TerminalSettings } from "@/lib/types";
@@ -17,6 +17,7 @@ interface UnifiedGame {
   predictedWinner: string;
   modelProb: number;
   gameStatus: number;
+  sport: "NBA" | "MLB";
   market: {
     marketTicker: string;
     marketTitle: string;
@@ -56,30 +57,41 @@ export default function TerminalManual() {
     setPredsError(null);
     setMarketsError(null);
 
-    // ── Step 1: Fetch predictions ──
-    let preds: Prediction[] = [];
+    // ── Step 1: Fetch NBA + MLB predictions in parallel ──
+    let nbaPreds: Prediction[] = [];
+    let mlbPreds: Prediction[] = [];
     try {
       const today = getTodayEastern();
       const gameDate = toGameDate(today);
 
-      const { data, error } = await supabase
-        .from("gamelogs")
-        .select(PREDICTION_COLS)
-        .eq("GAME_DATE", gameDate)
-        .not("PREDICTION", "is", null)
-        .order("GAME_ID", { ascending: true });
+      const [nbaResult, mlbResult] = await Promise.all([
+        supabase
+          .from("gamelogs")
+          .select(PREDICTION_COLS)
+          .eq("GAME_DATE", gameDate)
+          .not("PREDICTION", "is", null)
+          .order("GAME_ID", { ascending: true }),
+        supabase
+          .from("mlb_gamelogs")
+          .select(PREDICTION_COLS)
+          .eq("GAME_DATE", gameDate)
+          .not("PREDICTION", "is", null)
+          .order("GAME_ID", { ascending: true }),
+      ]);
 
-      if (error) throw new Error(error.message);
-      preds = (data ?? []) as unknown as Prediction[];
+      if (nbaResult.error) throw new Error(nbaResult.error.message);
+      if (mlbResult.error) throw new Error(mlbResult.error.message);
+      nbaPreds = (nbaResult.data ?? []) as unknown as Prediction[];
+      mlbPreds = (mlbResult.data ?? []) as unknown as Prediction[];
     } catch (e) {
       setPredsError(String(e));
       setLoading(false);
       return;
     }
 
-    // Build display predictions
+    // Build display predictions with sport tag
     const predMap = new Map<
-      number,
+      string,
       {
         gameId: number;
         awayName: string;
@@ -87,12 +99,13 @@ export default function TerminalManual() {
         predictedWinner: string;
         modelProb: number;
         gameStatus: number;
+        sport: "NBA" | "MLB";
       }
     >();
 
-    for (const r of preds) {
+    for (const r of nbaPreds) {
       if (r.PREDICTION === null || r.PREDICTION_PCT === null) continue;
-      predMap.set(r.GAME_ID, {
+      predMap.set(`nba-${r.GAME_ID}`, {
         gameId: r.GAME_ID,
         awayName: r.AWAY_NAME,
         homeName: r.HOME_NAME,
@@ -100,22 +113,39 @@ export default function TerminalManual() {
         modelProb:
           r.PREDICTION === 1 ? r.PREDICTION_PCT : 1 - r.PREDICTION_PCT,
         gameStatus: r.GAME_STATUS,
+        sport: "NBA",
       });
     }
 
-    // ── Step 2: Fetch Kalshi markets (if keys are configured) ──
-    let matchedMarkets: MatchedGame[] = [];
+    for (const r of mlbPreds) {
+      if (r.PREDICTION === null || r.PREDICTION_PCT === null) continue;
+      predMap.set(`mlb-${r.GAME_ID}`, {
+        gameId: r.GAME_ID,
+        awayName: r.AWAY_NAME,
+        homeName: r.HOME_NAME,
+        predictedWinner: r.PREDICTION === 1 ? r.HOME_NAME : r.AWAY_NAME,
+        modelProb:
+          r.PREDICTION === 1 ? r.PREDICTION_PCT : 1 - r.PREDICTION_PCT,
+        gameStatus: r.GAME_STATUS,
+        sport: "MLB",
+      });
+    }
+
+    // ── Step 2: Fetch Kalshi markets for both sports (if keys are configured) ──
+    let nbaMatchedMarkets: MatchedGame[] = [];
+    let mlbMatchedMarkets: MatchedGame[] = [];
     const keysReady = await hasKalshiKeys();
 
     if (keysReady) {
       try {
-        const kalshiMarkets = await Promise.race([
-          fetchNbaMarkets(),
+        const [nbaMarkets, mlbMarkets] = await Promise.race([
+          Promise.all([fetchNbaMarkets(), fetchMlbMarkets()]),
           new Promise<never>((_, reject) =>
             setTimeout(() => reject(new Error("Request timed out")), 15000),
           ),
         ]);
-        matchedMarkets = matchPredictionsToMarkets(preds, kalshiMarkets);
+        nbaMatchedMarkets = matchPredictionsToMarkets(nbaPreds, nbaMarkets);
+        mlbMatchedMarkets = matchMlbPredictionsToMarkets(mlbPreds, mlbMarkets);
       } catch (e) {
         setMarketsError(String(e));
       }
@@ -124,14 +154,16 @@ export default function TerminalManual() {
     }
 
     // ── Step 3: Merge into unified list ──
-    const marketByGameId = new Map<number, MatchedGame>();
-    for (const m of matchedMarkets) {
-      marketByGameId.set(m.gameId, m);
-    }
+    const nbaMarketByGameId = new Map<number, MatchedGame>();
+    for (const m of nbaMatchedMarkets) nbaMarketByGameId.set(m.gameId, m);
+
+    const mlbMarketByGameId = new Map<number, MatchedGame>();
+    for (const m of mlbMatchedMarkets) mlbMarketByGameId.set(m.gameId, m);
 
     const merged: UnifiedGame[] = [];
     for (const [, pred] of predMap) {
-      const m = marketByGameId.get(pred.gameId);
+      const marketMap = pred.sport === "NBA" ? nbaMarketByGameId : mlbMarketByGameId;
+      const m = marketMap.get(pred.gameId);
       merged.push({
         ...pred,
         market: m
@@ -218,7 +250,7 @@ export default function TerminalManual() {
         <div className="space-y-2">
           {unified.map((game) => (
             <TerminalGameRow
-              key={game.gameId}
+              key={`${game.sport}-${game.gameId}`}
               gameId={game.gameId}
               awayName={game.awayName}
               homeName={game.homeName}
@@ -228,6 +260,7 @@ export default function TerminalManual() {
               market={game.market}
               sizingMode={settings.sizingMode}
               betAmount={settings.betAmount}
+              sport={game.sport}
             />
           ))}
         </div>

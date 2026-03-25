@@ -59,6 +59,43 @@ export const ABBR_TO_TEAM: Record<string, string> = Object.fromEntries(
 );
 
 /**
+ * MLB team name → Kalshi ticker abbreviation.
+ * Verified against live Kalshi API (KXMLBGAME series).
+ */
+export const MLB_TEAM_ABBR_MAP: Record<string, string> = {
+  "Los Angeles Angels": "LAA",
+  "Arizona Diamondbacks": "AZ",
+  "Baltimore Orioles": "BAL",
+  "Boston Red Sox": "BOS",
+  "Chicago Cubs": "CHC",
+  "Cincinnati Reds": "CIN",
+  "Cleveland Guardians": "CLE",
+  "Colorado Rockies": "COL",
+  "Detroit Tigers": "DET",
+  "Houston Astros": "HOU",
+  "Kansas City Royals": "KC",
+  "Los Angeles Dodgers": "LAD",
+  "Washington Nationals": "WSH",
+  "New York Mets": "NYM",
+  "Oakland Athletics": "ATH",
+  "Pittsburgh Pirates": "PIT",
+  "San Diego Padres": "SD",
+  "Seattle Mariners": "SEA",
+  "San Francisco Giants": "SF",
+  "St. Louis Cardinals": "STL",
+  "Tampa Bay Rays": "TB",
+  "Texas Rangers": "TEX",
+  "Toronto Blue Jays": "TOR",
+  "Minnesota Twins": "MIN",
+  "Philadelphia Phillies": "PHI",
+  "Atlanta Braves": "ATL",
+  "Chicago White Sox": "CWS",
+  "Miami Marlins": "MIA",
+  "New York Yankees": "NYY",
+  "Milwaukee Brewers": "MIL",
+};
+
+/**
  * Extract the team abbreviation suffix from a Kalshi ticker.
  * e.g., "KXNBAGAME-26FEB19ORLSAC-ORL" → "ORL"
  */
@@ -145,6 +182,73 @@ export function matchPredictionsToMarkets(
   }
 
   // Sort by edge descending (best opportunities first)
+  matched.sort((a, b) => b.edge - a.edge);
+  return matched;
+}
+
+/**
+ * Match MLB predictions to Kalshi MLB markets.
+ * Same logic as NBA but uses MLB_TEAM_ABBR_MAP.
+ */
+export function matchMlbPredictionsToMarkets(
+  predictions: Prediction[],
+  markets: KalshiMarket[]
+): MatchedGame[] {
+  const matched: MatchedGame[] = [];
+
+  for (const pred of predictions) {
+    if (pred.PREDICTION === null || pred.PREDICTION_PCT === null) continue;
+
+    const homeAbbr = MLB_TEAM_ABBR_MAP[pred.HOME_NAME];
+    const awayAbbr = MLB_TEAM_ABBR_MAP[pred.AWAY_NAME];
+
+    if (!homeAbbr || !awayAbbr) continue;
+
+    const predictedWinner =
+      pred.PREDICTION === 1 ? pred.HOME_NAME : pred.AWAY_NAME;
+    const winnerAbbr = pred.PREDICTION === 1 ? homeAbbr : awayAbbr;
+
+    const modelProb =
+      pred.PREDICTION === 1
+        ? pred.PREDICTION_PCT
+        : 1.0 - pred.PREDICTION_PCT;
+
+    for (const market of markets) {
+      const eventTicker = market.eventTicker;
+      const tickerSuffix = tickerTeamSuffix(market.ticker);
+
+      if (!eventTicker.includes(homeAbbr) || !eventTicker.includes(awayAbbr)) {
+        continue;
+      }
+
+      if (tickerSuffix !== winnerAbbr) {
+        continue;
+      }
+
+      const yesAsk = market.yesAsk ?? 0;
+      if (yesAsk <= 0 || yesAsk >= 1) continue;
+
+      const edge = (modelProb - yesAsk) * 100;
+
+      matched.push({
+        gameId: pred.GAME_ID,
+        homeName: pred.HOME_NAME,
+        awayName: pred.AWAY_NAME,
+        predictedWinner,
+        modelProb,
+        marketImpliedProb: yesAsk,
+        edge,
+        marketTicker: market.ticker,
+        marketTitle: market.title,
+        yesAsk: market.yesAsk ?? null,
+        noAsk: market.noAsk ?? null,
+        betSide: "yes",
+      });
+
+      break;
+    }
+  }
+
   matched.sort((a, b) => b.edge - a.edge);
   return matched;
 }

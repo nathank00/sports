@@ -25,6 +25,7 @@ interface TerminalGameRowProps {
   market: MarketData | null;
   sizingMode: SizingMode;
   betAmount: number;
+  sport?: "NBA" | "MLB";
 }
 
 export default function TerminalGameRow({
@@ -36,6 +37,7 @@ export default function TerminalGameRow({
   market,
   sizingMode,
   betAmount,
+  sport,
 }: TerminalGameRowProps) {
   const [inputAmount, setInputAmount] = useState(betAmount);
   const [inputMode, setInputMode] = useState<SizingMode>(sizingMode);
@@ -96,6 +98,11 @@ export default function TerminalGameRow({
         <div className="flex min-w-0 flex-1 flex-col gap-2 sm:border-r sm:border-neutral-800/60 sm:pr-5">
           {/* Matchup */}
           <div className="flex items-center gap-2">
+            {sport && (
+              <span className="shrink-0 rounded bg-neutral-800 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-neutral-500">
+                {sport}
+              </span>
+            )}
             <span className="truncate text-sm font-medium text-neutral-300">
               {awayName}
             </span>
