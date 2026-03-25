@@ -247,22 +247,56 @@ export default function TerminalManual() {
           No predictions for today. Games will appear here once the model runs.
         </div>
       ) : (
-        <div className="space-y-2">
-          {unified.map((game) => (
-            <TerminalGameRow
-              key={`${game.sport}-${game.gameId}`}
-              gameId={game.gameId}
-              awayName={game.awayName}
-              homeName={game.homeName}
-              predictedWinner={game.predictedWinner}
-              modelProb={game.modelProb}
-              gameStatus={game.gameStatus}
-              market={game.market}
-              sizingMode={settings.sizingMode}
-              betAmount={settings.betAmount}
-              sport={game.sport}
-            />
-          ))}
+        <div className="space-y-6">
+          {/* NBA Section */}
+          {unified.some((g) => g.sport === "NBA") && (
+            <div className="space-y-2">
+              <h2 className="text-xs uppercase tracking-[0.15em] text-neutral-500 font-semibold">
+                NBA
+              </h2>
+              {unified
+                .filter((g) => g.sport === "NBA")
+                .map((game) => (
+                  <TerminalGameRow
+                    key={`nba-${game.gameId}`}
+                    gameId={game.gameId}
+                    awayName={game.awayName}
+                    homeName={game.homeName}
+                    predictedWinner={game.predictedWinner}
+                    modelProb={game.modelProb}
+                    gameStatus={game.gameStatus}
+                    market={game.market}
+                    sizingMode={settings.sizingMode}
+                    betAmount={settings.betAmount}
+                  />
+                ))}
+            </div>
+          )}
+
+          {/* MLB Section */}
+          {unified.some((g) => g.sport === "MLB") && (
+            <div className="space-y-2">
+              <h2 className="text-xs uppercase tracking-[0.15em] text-neutral-500 font-semibold">
+                MLB
+              </h2>
+              {unified
+                .filter((g) => g.sport === "MLB")
+                .map((game) => (
+                  <TerminalGameRow
+                    key={`mlb-${game.gameId}`}
+                    gameId={game.gameId}
+                    awayName={game.awayName}
+                    homeName={game.homeName}
+                    predictedWinner={game.predictedWinner}
+                    modelProb={game.modelProb}
+                    gameStatus={game.gameStatus}
+                    market={game.market}
+                    sizingMode={settings.sizingMode}
+                    betAmount={settings.betAmount}
+                  />
+                ))}
+            </div>
+          )}
         </div>
       )}
     </div>
