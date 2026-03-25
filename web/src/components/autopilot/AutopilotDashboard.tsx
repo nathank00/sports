@@ -3,8 +3,8 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { supabase } from "@/lib/supabase";
 import { hasKalshiKeys } from "@/lib/kalshi-crypto";
-import { fetchPositions, fetchNbaMarkets } from "@/lib/kalshi-api";
-import type { KalshiMarket } from "@/lib/types";
+import { fetchPositions, fetchNbaMarkets, fetchMlbMarkets } from "@/lib/kalshi-api";
+import type { KalshiMarket, Sport } from "@/lib/types";
 import { AutopilotPositionManager, type GameState } from "@/lib/autopilot-position-manager";
 import AutopilotGameCard from "./AutopilotGameCard";
 import type {
@@ -17,8 +17,25 @@ import type {
   SizingMode,
 } from "@/lib/types";
 
+const SPORT_CONFIG = {
+  nba: {
+    label: "NBA",
+    tickerPrefix: "KXNBA",
+    gamesEndpoint: "/api/games/today",
+    fetchMarkets: fetchNbaMarkets,
+    heartbeatId: 1,
+  },
+  mlb: {
+    label: "MLB",
+    tickerPrefix: "KXMLB",
+    gamesEndpoint: "/api/mlb-games/today",
+    fetchMarkets: fetchMlbMarkets,
+    heartbeatId: 2,
+  },
+} as const;
+
 /** Default settings for new users (matches Supabase column defaults). */
-const DEFAULT_SETTINGS: Omit<AutopilotSettingsV2, "user_id" | "updated_at"> = {
+const DEFAULT_SETTINGS: Omit<AutopilotSettingsV2, "user_id" | "updated_at" | "sport"> = {
   auto_execute_enabled: false,
   edge_threshold: 8.0,
   take_profit: 0.08,
@@ -95,6 +112,9 @@ interface Props {
 }
 
 export default function AutopilotDashboard({ userId }: Props) {
+  const [activeSport, setActiveSport] = useState<Sport>("nba");
+  const sportConfig = SPORT_CONFIG[activeSport];
+
   const [games, setGames] = useState<Map<string, AutopilotGame>>(new Map());
   const [settings, setSettings] = useState<AutopilotSettingsV2 | null>(null);
   const [keysConfigured, setKeysConfigured] = useState(false);
@@ -152,14 +172,20 @@ export default function AutopilotDashboard({ userId }: Props) {
       setActivityLog((prev) => [entry, ...prev].slice(0, 100));
     };
 
-    const pm = new AutopilotPositionManager(userId, logCallback);
+    const pm = new AutopilotPositionManager(
+      userId,
+      logCallback,
+      activeSport,
+      SPORT_CONFIG[activeSport].tickerPrefix,
+      SPORT_CONFIG[activeSport].fetchMarkets,
+    );
     positionManagerRef.current = pm;
 
     return () => {
       pm.dispose();
       positionManagerRef.current = null;
     };
-  }, [userId]);
+  }, [userId, activeSport]);
 
   // ── Load settings from Supabase (with localStorage migration) ───────
 
@@ -168,10 +194,12 @@ export default function AutopilotDashboard({ userId }: Props) {
 
     const loadSettings = async () => {
       try {
+        // Try to load settings for the active sport
         const { data, error } = await supabase
           .from("autopilot_settings")
           .select("*")
           .eq("user_id", userId)
+          .eq("sport", activeSport)
           .limit(1)
           .single();
 
@@ -179,48 +207,79 @@ export default function AutopilotDashboard({ userId }: Props) {
           setSettings(data as AutopilotSettingsV2);
           settingsRef.current = data as AutopilotSettingsV2;
         } else {
-          // No Supabase row — migrate from localStorage or use defaults
-          let migrated: Omit<AutopilotSettingsV2, "user_id" | "updated_at"> = {
+          // No row for this sport — try legacy row without sport column, or use defaults
+          let migrated = {
             ...DEFAULT_SETTINGS,
           };
-          try {
-            const raw = localStorage.getItem("autopilot-settings");
-            if (raw) {
-              const parsed = JSON.parse(raw);
-              // Map old camelCase field names to new snake_case
+
+          if (activeSport === "nba") {
+            // Check for legacy row (no sport column)
+            const { data: legacyData } = await supabase
+              .from("autopilot_settings")
+              .select("*")
+              .eq("user_id", userId)
+              .is("sport", null)
+              .limit(1)
+              .single();
+
+            if (legacyData) {
               migrated = {
-                auto_execute_enabled: parsed.autoExecuteEnabled ?? false,
-                edge_threshold: parsed.edgeThreshold ?? 8.0,
-                take_profit: 0.08, // new field, default
-                stop_loss: 0.05, // new field, default
-                sizing_mode: parsed.sizingMode ?? "dollars",
-                bet_amount: parsed.betAmount ?? 10,
-                max_contracts_per_bet:
-                  parsed.maxContractsPerBet ??
-                  parsed.maxContractsPerGame ??
-                  20,
+                auto_execute_enabled: legacyData.auto_execute_enabled ?? false,
+                edge_threshold: legacyData.edge_threshold ?? 8.0,
+                take_profit: legacyData.take_profit ?? 0.08,
+                stop_loss: legacyData.stop_loss ?? 0.05,
+                sizing_mode: legacyData.sizing_mode ?? "dollars",
+                bet_amount: legacyData.bet_amount ?? 10,
+                max_contracts_per_bet: legacyData.max_contracts_per_bet ?? 20,
               };
-              localStorage.removeItem("autopilot-settings");
+              // Update legacy row to have sport='nba'
+              await supabase
+                .from("autopilot_settings")
+                .update({ sport: "nba" })
+                .eq("user_id", userId)
+                .is("sport", null);
+            } else {
+              // Try localStorage migration
+              try {
+                const raw = localStorage.getItem("autopilot-settings");
+                if (raw) {
+                  const parsed = JSON.parse(raw);
+                  migrated = {
+                    auto_execute_enabled: parsed.autoExecuteEnabled ?? false,
+                    edge_threshold: parsed.edgeThreshold ?? 8.0,
+                    take_profit: 0.08,
+                    stop_loss: 0.05,
+                    sizing_mode: parsed.sizingMode ?? "dollars",
+                    bet_amount: parsed.betAmount ?? 10,
+                    max_contracts_per_bet:
+                      parsed.maxContractsPerBet ??
+                      parsed.maxContractsPerGame ??
+                      20,
+                  };
+                  localStorage.removeItem("autopilot-settings");
+                }
+              } catch {
+                // localStorage not available or corrupt
+              }
             }
-          } catch {
-            // localStorage not available or corrupt — use defaults
           }
 
-          // Seed Supabase row
+          // Seed Supabase row for this sport
           const row: AutopilotSettingsV2 = {
             user_id: userId,
+            sport: activeSport,
             ...migrated,
             updated_at: new Date().toISOString(),
           };
-          await supabase.from("autopilot_settings").upsert(row);
+          await supabase.from("autopilot_settings").upsert(row, { onConflict: "user_id,sport" });
           setSettings(row);
           settingsRef.current = row;
         }
       } catch (e) {
         console.error("Failed to load settings:", e);
-        // Use defaults in memory
         const defaults = {
           user_id: userId,
+          sport: activeSport,
           ...DEFAULT_SETTINGS,
           updated_at: new Date().toISOString(),
         };
@@ -230,7 +289,7 @@ export default function AutopilotDashboard({ userId }: Props) {
     };
 
     loadSettings();
-  }, [userId]);
+  }, [userId, activeSport]);
 
   // ── Poll Kalshi positions + markets every 5s → TP/SL exits + entry checks ──
 
@@ -242,7 +301,7 @@ export default function AutopilotDashboard({ userId }: Props) {
       try {
         [positions, markets] = await Promise.all([
           fetchPositions(),
-          fetchNbaMarkets(),
+          sportConfig.fetchMarkets(),
         ]);
         setKalshiPositions(positions);
         kalshiPositionsRef.current = positions;
@@ -345,11 +404,18 @@ export default function AutopilotDashboard({ userId }: Props) {
 
   // ── Fetch today's scheduled games (ESPN + Kalshi) ────────────────────
 
+  // Reset games when switching sports
+  useEffect(() => {
+    setGames(new Map());
+    setSystemStatus("unknown");
+    latestSignalTsRef.current = null;
+  }, [activeSport]);
+
   useEffect(() => {
     fetchScheduledGames();
     const interval = setInterval(fetchScheduledGames, 30_000);
     return () => clearInterval(interval);
-  }, []);
+  }, [activeSport]);
 
   // ── Fetch initial signals + subscribe to real-time updates ───────────
 
@@ -411,7 +477,7 @@ export default function AutopilotDashboard({ userId }: Props) {
         const { data } = await supabase
           .from("autopilot_heartbeat")
           .select("last_heartbeat")
-          .eq("id", 1)
+          .eq("id", sportConfig.heartbeatId)
           .single();
 
         if (data?.last_heartbeat) {
@@ -435,7 +501,7 @@ export default function AutopilotDashboard({ userId }: Props) {
 
   const fetchScheduledGames = async () => {
     try {
-      const resp = await fetch("/api/games/today");
+      const resp = await fetch(sportConfig.gamesEndpoint);
       if (!resp.ok) return;
       const data = await resp.json();
       const scheduled: ScheduledGame[] = data.games || [];
@@ -527,6 +593,16 @@ export default function AutopilotDashboard({ userId }: Props) {
   };
 
   const handleNewSignal = useCallback((signal: AutopilotSignal) => {
+    // Filter signals by sport: if the signal has a sport field, check it.
+    // Otherwise, check if the recommended_ticker matches our sport's prefix.
+    if (signal.sport && signal.sport !== activeSport) return;
+    if (!signal.sport && signal.recommended_ticker) {
+      const isOurSport = signal.recommended_ticker.startsWith(sportConfig.tickerPrefix);
+      const isNba = signal.recommended_ticker.startsWith("KXNBA");
+      const isMlb = signal.recommended_ticker.startsWith("KXMLB");
+      if ((isNba || isMlb) && !isOurSport) return;
+    }
+
     // Track latest signal timestamp for polling fallback
     if (!latestSignalTsRef.current || signal.created_at > latestSignalTsRef.current) {
       latestSignalTsRef.current = signal.created_at;
@@ -562,7 +638,7 @@ export default function AutopilotDashboard({ userId }: Props) {
     if (currentSettings?.auto_execute_enabled && positionManagerRef.current) {
       positionManagerRef.current.evaluateSignal(signal, currentSettings);
     }
-  }, []);
+  }, [activeSport, sportConfig.tickerPrefix]);
 
   // Keep refs in sync so callbacks always see the latest values
   handleNewSignalRef.current = handleNewSignal;
@@ -576,13 +652,14 @@ export default function AutopilotDashboard({ userId }: Props) {
     const next = {
       ...settings,
       ...patch,
+      sport: activeSport,
       updated_at: new Date().toISOString(),
     };
     setSettings(next);
     settingsRef.current = next;
 
     try {
-      await supabase.from("autopilot_settings").upsert(next);
+      await supabase.from("autopilot_settings").upsert(next, { onConflict: "user_id,sport" });
     } catch (e) {
       console.error("Failed to save settings:", e);
     }
@@ -606,6 +683,12 @@ export default function AutopilotDashboard({ userId }: Props) {
   const getGameProgress = (game: AutopilotGame): number => {
     if (!game.latestSignal) return 0;
     const { period, seconds_remaining } = game.latestSignal;
+
+    if (activeSport === "mlb") {
+      // MLB: seconds_remaining = outs remaining (54 max regulation)
+      // Progress = total outs - outs remaining
+      return 54 - Math.min(seconds_remaining, 54);
+    }
 
     const quarterLength = 720;
     const otLength = 300;
@@ -642,7 +725,7 @@ export default function AutopilotDashboard({ userId }: Props) {
       const homeAbbr = game.homeTeam;
       const awayAbbr = game.awayTeam;
       const match = kalshiPositions.find(
-        (p) => p.position > 0 && p.ticker.startsWith("KXNBA") &&
+        (p) => p.position > 0 && p.ticker.startsWith(sportConfig.tickerPrefix) &&
           (p.ticker.includes(homeAbbr) || p.ticker.includes(awayAbbr))
       );
       return match || null;
@@ -653,10 +736,15 @@ export default function AutopilotDashboard({ userId }: Props) {
   /** Check if a game is finished (Final, Final/OT, etc.). */
   const isGameFinished = (game: AutopilotGame): boolean => {
     if (game.statusDetail?.toLowerCase().includes("final")) return true;
-    // Q4 (or later) with 0 seconds remaining = game over
     if (game.latestSignal) {
       const { period, seconds_remaining } = game.latestSignal;
-      if (period >= 4 && seconds_remaining === 0) return true;
+      if (activeSport === "nba") {
+        // Q4 (or later) with 0 seconds remaining = game over
+        if (period >= 4 && seconds_remaining === 0) return true;
+      } else {
+        // MLB: 9th inning+ with 0 outs remaining and not tied
+        if (period >= 9 && seconds_remaining === 0) return true;
+      }
     }
     return false;
   };
@@ -699,6 +787,7 @@ export default function AutopilotDashboard({ userId }: Props) {
 
   const effectiveSettings: AutopilotSettingsV2 = settings || {
     user_id: userId,
+    sport: activeSport,
     ...DEFAULT_SETTINGS,
     updated_at: new Date().toISOString(),
   };
@@ -768,9 +857,26 @@ export default function AutopilotDashboard({ userId }: Props) {
     <div className="min-h-screen bg-black text-white p-4 md:p-6 font-mono">
       {/* Header */}
       <div className="max-w-6xl mx-auto mb-6">
+        {/* Sport tabs */}
+        <div className="flex items-center gap-1 mb-4">
+          {(["nba", "mlb"] as const).map((sport) => (
+            <button
+              key={sport}
+              onClick={() => setActiveSport(sport)}
+              className={`px-4 py-1.5 text-sm font-bold tracking-wider rounded-t transition-colors ${
+                activeSport === sport
+                  ? "bg-neutral-800 text-white border-b-2 border-green-500"
+                  : "text-neutral-500 hover:text-neutral-300"
+              }`}
+            >
+              {sport.toUpperCase()}
+            </button>
+          ))}
+        </div>
+
         <div className="flex items-center justify-between mb-4">
           <div>
-            <h1 className="text-xl font-bold tracking-wider">AUTOPILOT</h1>
+            <h1 className="text-xl font-bold tracking-wider">AUTOPILOT — {sportConfig.label}</h1>
             <p className="text-xs text-neutral-500 mt-1">
               Live win probability model + automated trading signals
             </p>
@@ -1141,6 +1247,7 @@ export default function AutopilotDashboard({ userId }: Props) {
                 edgeThreshold={effectiveSettings.edge_threshold}
                 onManualExit={handleManualExit}
                 isFinished={isGameFinished(game)}
+                sport={activeSport}
               />
             ))}
           </div>

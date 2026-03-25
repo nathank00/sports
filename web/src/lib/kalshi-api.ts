@@ -274,6 +274,52 @@ export async function fetchNbaMarkets(): Promise<KalshiMarket[]> {
 }
 
 /**
+ * Fetch open MLB game markets from Kalshi.
+ * Same as fetchNbaMarkets but for MLB series ticker.
+ */
+export async function fetchMlbMarkets(): Promise<KalshiMarket[]> {
+  const data = (await kalshiRequest(
+    "GET",
+    "/trade-api/v2/markets",
+    "series_ticker=KXMLBGAME&status=open&limit=200"
+  )) as {
+    markets?: Array<{
+      ticker: string;
+      title: string;
+      subtitle?: string;
+      event_ticker: string;
+      status: string;
+      yes_bid_dollars?: string;
+      yes_ask_dollars?: string;
+      no_bid_dollars?: string;
+      no_ask_dollars?: string;
+      last_price_dollars?: string;
+      volume?: number;
+      open_interest?: number;
+    }>;
+  };
+
+  if (!data.markets) return [];
+
+  return data.markets.map((m) => ({
+    ticker: m.ticker,
+    title: m.title,
+    subtitle: m.subtitle,
+    eventTicker: m.event_ticker,
+    status: m.status,
+    yesBid: m.yes_bid_dollars ? parseFloat(m.yes_bid_dollars) : undefined,
+    yesAsk: m.yes_ask_dollars ? parseFloat(m.yes_ask_dollars) : undefined,
+    noBid: m.no_bid_dollars ? parseFloat(m.no_bid_dollars) : undefined,
+    noAsk: m.no_ask_dollars ? parseFloat(m.no_ask_dollars) : undefined,
+    lastPrice: m.last_price_dollars
+      ? parseFloat(m.last_price_dollars)
+      : undefined,
+    volume: m.volume,
+    openInterest: m.open_interest,
+  }));
+}
+
+/**
  * Place a limit order on Kalshi with a 30-second expiration.
  * The expiration prevents resting orders from accumulating if the market moves.
  *

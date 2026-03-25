@@ -129,6 +129,9 @@ export interface PredictionDisplay {
 /** Position sizing mode. */
 export type SizingMode = "contracts" | "dollars";
 
+/** Sport type for autopilot. */
+export type Sport = "nba" | "mlb";
+
 /** Terminal trading settings (persisted in localStorage). */
 export interface TerminalSettings {
   edgeThreshold: number;
@@ -145,8 +148,8 @@ export interface AutopilotSignal {
   game_id: string;
   home_team: string;
   away_team: string;
-  period: number;
-  seconds_remaining: number;
+  period: number;              // NBA: quarter (1-4+), MLB: inning (1-9+)
+  seconds_remaining: number;   // NBA: seconds left, MLB: outs remaining
   home_score: number;
   away_score: number;
   model_home_win_prob: number;
@@ -162,6 +165,10 @@ export interface AutopilotSignal {
   recommended_ticker: string | null;
   reason: string | null;
   reason_code: string | null;
+  /** MLB-specific fields (null for NBA signals) */
+  sport?: string | null;
+  inning_half?: string | null;   // "top" | "bottom" | "end"
+  outs_in_inning?: number | null; // 0-3
 }
 
 /** A game on today's slate — pregame, live (with model signals), or completed. */
@@ -198,9 +205,10 @@ export interface AutopilotPosition {
   sell_signal: number | null;
 }
 
-/** Autopilot settings (persisted in Supabase, per-user). */
+/** Autopilot settings (persisted in Supabase, per-user per-sport). */
 export interface AutopilotSettingsV2 {
   user_id: string;
+  sport: Sport;
   auto_execute_enabled: boolean;
   edge_threshold: number;
   take_profit: number;

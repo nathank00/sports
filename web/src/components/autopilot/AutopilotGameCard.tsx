@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { AutopilotGame, AutopilotPosition, PositionItem, KalshiMarket } from "@/lib/types";
+import type { AutopilotGame, AutopilotPosition, PositionItem, KalshiMarket, Sport } from "@/lib/types";
 
 /** Friction in cents — must match backend decision.py and position manager. */
 const FRICTION_CENTS = 2.0;
@@ -13,9 +13,10 @@ interface Props {
   edgeThreshold: number;
   onManualExit: (position: AutopilotPosition) => void;
   isFinished?: boolean;
+  sport: Sport;
 }
 
-function formatClock(period: number, secondsRemaining: number): string {
+function formatNbaClock(period: number, secondsRemaining: number): string {
   if (period <= 4) {
     const fullQuartersLeft = 4 - period;
     const clockInQuarter = secondsRemaining - fullQuartersLeft * 720;
@@ -26,6 +27,51 @@ function formatClock(period: number, secondsRemaining: number): string {
   const mins = Math.floor(secondsRemaining / 60);
   const secs = Math.floor(secondsRemaining % 60);
   return `OT ${mins}:${secs.toString().padStart(2, "0")}`;
+}
+
+/** MLB outs indicator — three circles, filled = out recorded. */
+function OutsIndicator({ outs }: { outs: number }) {
+  const clampedOuts = Math.min(Math.max(outs, 0), 3);
+  return (
+    <span className="inline-flex items-center gap-0.5 ml-1.5">
+      {[0, 1, 2].map((i) => (
+        <span
+          key={i}
+          className={`inline-block w-2 h-2 rounded-full border ${
+            i < clampedOuts
+              ? "bg-yellow-400 border-yellow-400"
+              : "bg-transparent border-neutral-600"
+          }`}
+        />
+      ))}
+    </span>
+  );
+}
+
+/** Format MLB inning half label. */
+function formatMlbInning(inning: number, inningHalf?: string | null): string {
+  const ordinal = inning === 1 ? "1st" : inning === 2 ? "2nd" : inning === 3 ? "3rd" : `${inning}th`;
+  if (inningHalf === "top") return `Top ${ordinal}`;
+  if (inningHalf === "bottom") return `Bot ${ordinal}`;
+  if (inningHalf === "end") return `End ${ordinal}`;
+  return ordinal;
+}
+
+/** Render MLB or NBA game status display. */
+function GameStatus({ signal, sport }: { signal: { period: number; seconds_remaining: number; inning_half?: string | null; outs_in_inning?: number | null }; sport: Sport }) {
+  if (sport === "mlb") {
+    return (
+      <span className="text-xs text-neutral-500 flex items-center gap-1">
+        <span>{formatMlbInning(signal.period, signal.inning_half)}</span>
+        <OutsIndicator outs={signal.outs_in_inning ?? 0} />
+      </span>
+    );
+  }
+  return (
+    <span className="text-xs text-neutral-500">
+      {formatNbaClock(signal.period, signal.seconds_remaining)}
+    </span>
+  );
 }
 
 function actionColor(action: string): string {
@@ -234,12 +280,14 @@ function LiveCard({
   liveMarkets,
   edgeThreshold,
   onManualExit,
+  sport,
 }: {
   game: AutopilotGame;
   kalshiPosition: PositionItem | null;
   liveMarkets: KalshiMarket[];
   edgeThreshold: number;
   onManualExit: (position: AutopilotPosition) => void;
+  sport: Sport;
 }) {
   const [expanded, setExpanded] = useState(false);
   const s = game.latestSignal!;
@@ -297,9 +345,7 @@ function LiveCard({
             <span className="text-neutral-400">{s.home_team}</span>
           </div>
         </div>
-        <span className="text-xs text-neutral-500">
-          {formatClock(s.period, s.seconds_remaining)}
-        </span>
+        <GameStatus signal={s} sport={sport} />
       </div>
 
       {/* Model probability bar */}
@@ -479,7 +525,9 @@ function LiveCard({
               className="flex items-center justify-between text-xs py-0.5 border-b border-neutral-800/50"
             >
               <span className="text-neutral-500">
-                {formatClock(sig.period, sig.seconds_remaining)}
+                {sport === "mlb"
+                  ? formatMlbInning(sig.period, sig.inning_half)
+                  : formatNbaClock(sig.period, sig.seconds_remaining)}
               </span>
               <span className="text-neutral-400">
                 {sig.away_team} {sig.away_score} - {sig.home_score}{" "}
@@ -525,17 +573,19 @@ function FinishedCard({
   game,
   kalshiPosition,
   onManualExit,
+  sport,
 }: {
   game: AutopilotGame;
   kalshiPosition: PositionItem | null;
   onManualExit: (position: AutopilotPosition) => void;
+  sport: Sport;
 }) {
   const s = game.latestSignal!;
 
   // Determine winner for display
   const homeWon = s.home_score > s.away_score;
   const tied = s.home_score === s.away_score;
-  const isOT = s.period > 4;
+  const isExtras = sport === "mlb" ? s.period > 9 : s.period > 4;
 
   return (
     <div className="rounded-lg border border-neutral-800/60 bg-neutral-900/30 p-4 opacity-60">
@@ -559,7 +609,7 @@ function FinishedCard({
           </div>
         </div>
         <span className="text-xs text-neutral-600 font-medium">
-          {game.statusDetail || (isOT ? "Final/OT" : "Final")}
+          {game.statusDetail || (isExtras ? (sport === "mlb" ? `Final/${s.period}` : "Final/OT") : "Final")}
         </span>
       </div>
 
@@ -587,6 +637,7 @@ export default function AutopilotGameCard({
   edgeThreshold,
   onManualExit,
   isFinished,
+  sport,
 }: Props) {
   if (isFinished && game.latestSignal) {
     return (
@@ -594,6 +645,7 @@ export default function AutopilotGameCard({
         game={game}
         kalshiPosition={kalshiPosition}
         onManualExit={onManualExit}
+        sport={sport}
       />
     );
   }
@@ -605,6 +657,7 @@ export default function AutopilotGameCard({
         liveMarkets={liveMarkets}
         edgeThreshold={edgeThreshold}
         onManualExit={onManualExit}
+        sport={sport}
       />
     );
   }

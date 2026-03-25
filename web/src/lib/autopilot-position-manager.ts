@@ -14,7 +14,6 @@ import { supabase } from "@/lib/supabase";
 import {
   placeOrder,
   sellOrder,
-  fetchNbaMarkets,
   fetchPositions,
 } from "@/lib/kalshi-api";
 import type {
@@ -24,7 +23,11 @@ import type {
   AutopilotSettingsV2,
   PositionItem,
   KalshiMarket,
+  Sport,
 } from "@/lib/types";
+
+/** Function type for fetching Kalshi markets for a specific sport. */
+export type MarketFetcher = () => Promise<KalshiMarket[]>;
 
 export type LogCallback = (
   level: string,
@@ -45,6 +48,9 @@ export interface GameState {
 export class AutopilotPositionManager {
   private userId: string;
   private onLog: LogCallback;
+  private sport: Sport;
+  private tickerPrefix: string;
+  private fetchMarkets: MarketFetcher;
 
   /** Events currently being processed (buy or sell in-flight). Prevents double-firing. */
   private busyEvents = new Set<string>();
@@ -61,9 +67,23 @@ export class AutopilotPositionManager {
   /** Tracks whether we already fired a buy for a given signal ID via the 5s price check. */
   private priceCheckFiredSignals = new Set<number>();
 
-  constructor(userId: string, onLog: LogCallback) {
+  constructor(userId: string, onLog: LogCallback, sport: Sport, tickerPrefix: string, fetchMarkets: MarketFetcher) {
     this.userId = userId;
     this.onLog = onLog;
+    this.sport = sport;
+    this.tickerPrefix = tickerPrefix;
+    this.fetchMarkets = fetchMarkets;
+  }
+
+  /** Check if we're in the no-trade window for this sport. */
+  private isInNoTradeWindow(period: number, secondsRemaining: number): boolean {
+    if (this.sport === "nba") {
+      // NBA: last 5 minutes of Q4/OT
+      return period >= 4 && secondsRemaining < AutopilotPositionManager.NO_TRADE_SECONDS;
+    }
+    // MLB: period = inning, secondsRemaining = outs remaining
+    // No-trade when in 9th+ inning with 6 or fewer outs remaining (final inning)
+    return period >= 9 && secondsRemaining <= 6;
   }
 
   // ── Entry: fired by dashboard when new signal arrives ─────────────
@@ -121,8 +141,8 @@ export class AutopilotPositionManager {
       }
     }
 
-    // No-trade window: last 5 minutes of Q4 or OT — skip silently (backend logs BLOCKED)
-    if (signal.period >= 4 && signal.seconds_remaining < AutopilotPositionManager.NO_TRADE_SECONDS) {
+    // No-trade window — skip silently (backend logs BLOCKED)
+    if (this.isInNoTradeWindow(signal.period, signal.seconds_remaining)) {
       return;
     }
 
@@ -148,7 +168,7 @@ export class AutopilotPositionManager {
       }
 
       // Fetch fresh ask price
-      const markets = await fetchNbaMarkets();
+      const markets = await this.fetchMarkets();
       const market = markets.find((m) => m.ticker === ticker);
       if (!market?.yesAsk) {
         this.onLog("INFO", `${gameLabel}: No ask price for ${ticker} — skipping`, undefined);
@@ -227,9 +247,9 @@ export class AutopilotPositionManager {
     gameStates: Map<string, GameState>,
     markets: KalshiMarket[],
   ): Promise<void> {
-    // Work from actual Kalshi holdings
+    // Work from actual Kalshi holdings — filter to this sport's ticker prefix
     const activeKalshi = kalshiPositions.filter(
-      (kp) => kp.position > 0 && kp.ticker.startsWith("KXNBA")
+      (kp) => kp.position > 0 && kp.ticker.startsWith(this.tickerPrefix)
     );
     if (activeKalshi.length === 0) return;
 
@@ -354,8 +374,8 @@ export class AutopilotPositionManager {
       const modelHomeProb = signal.blended_home_win_prob ?? signal.model_home_win_prob;
       const modelAwayProb = 1 - modelHomeProb;
 
-      // No-trade window: last 5 minutes of Q4 or OT
-      if (signal.period >= 4 && signal.seconds_remaining < AutopilotPositionManager.NO_TRADE_SECONDS) {
+      // No-trade window — skip
+      if (this.isInNoTradeWindow(signal.period, signal.seconds_remaining)) {
         continue;
       }
 
@@ -519,7 +539,7 @@ export class AutopilotPositionManager {
     // Fetch fresh bid price
     let bidPrice: number;
     try {
-      const markets = await fetchNbaMarkets();
+      const markets = await this.fetchMarkets();
       const market = markets.find((m) => m.ticker === ticker);
       if (market?.yesBid != null) {
         bidPrice = market.yesBid;
