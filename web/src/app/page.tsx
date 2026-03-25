@@ -60,9 +60,8 @@ async function fetchModelStats() {
   };
 
   return {
-    allTimePct: allTime.total > 0 ? Math.round((allTime.wins / allTime.total) * 100) : null,
-    allTimeTotal: allTime.total,
-    currentPct: current.total > 0 ? Math.round((current.wins / current.total) * 100) : null,
+    allTimePct: allTime.total > 0 ? ((allTime.wins / allTime.total) * 100).toFixed(1) : null,
+    currentPct: current.total > 0 ? ((current.wins / current.total) * 100).toFixed(1) : null,
     currentTotal: current.total,
     currentYear,
   };
@@ -250,31 +249,43 @@ export default async function Home() {
       {/* ═══════════════════════════════════════════════
           FINAL CTA (compact)
           ═══════════════════════════════════════════════ */}
-      <section>
-        <div className="mx-auto max-w-2xl px-6 py-24 text-center md:py-28">
+      <section className="relative overflow-hidden">
+        {/* Subtle radial glow behind the stats */}
+        <div className="pointer-events-none absolute inset-0">
+          <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 h-[500px] w-[500px] rounded-full bg-green-500/[0.04] blur-[120px]" />
+          <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 h-[250px] w-[250px] rounded-full bg-green-400/[0.06] blur-[80px]" />
+        </div>
+
+        <div className="relative mx-auto max-w-2xl px-6 py-24 text-center md:py-28">
           <h2 className="mb-6 text-2xl font-semibold tracking-tight text-white md:text-3xl">
             The signal is live.
           </h2>
 
           {/* Performance stats */}
-          <div className="mb-10 flex items-center justify-center gap-8">
+          <div className="mb-10 flex items-center justify-center gap-10">
             {stats.allTimePct != null && (
               <div className="text-center">
-                <div className="text-3xl font-bold text-white md:text-4xl">
+                <div className="flex items-center justify-center gap-1.5 text-3xl font-bold text-white md:text-4xl">
                   {stats.allTimePct}%
+                  <svg className="h-4 w-4 text-green-400" viewBox="0 0 12 12" fill="currentColor">
+                    <path d="M6 1L11 8H1z" />
+                  </svg>
                 </div>
                 <div className="mt-1 text-[11px] uppercase tracking-wider text-neutral-600">
-                  All-time ({stats.allTimeTotal.toLocaleString()} picks)
+                  All-time
                 </div>
               </div>
             )}
             {stats.currentPct != null && stats.currentTotal > 0 && (
               <div className="text-center">
-                <div className="text-3xl font-bold text-white md:text-4xl">
+                <div className="flex items-center justify-center gap-1.5 text-3xl font-bold text-white md:text-4xl">
                   {stats.currentPct}%
+                  <svg className="h-4 w-4 text-green-400" viewBox="0 0 12 12" fill="currentColor">
+                    <path d="M6 1L11 8H1z" />
+                  </svg>
                 </div>
                 <div className="mt-1 text-[11px] uppercase tracking-wider text-neutral-600">
-                  {stats.currentYear} ({stats.currentTotal.toLocaleString()} picks)
+                  {stats.currentYear}
                 </div>
               </div>
             )}
