@@ -212,6 +212,12 @@ export default function Home() {
           </span>
           <div className="flex items-center gap-4">
             <Link
+              href="/how-to"
+              className="text-[11px] text-neutral-700 transition-colors hover:text-neutral-500"
+            >
+              How To
+            </Link>
+            <Link
               href="/privacy"
               className="text-[11px] text-neutral-700 transition-colors hover:text-neutral-500"
             >

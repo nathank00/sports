@@ -16,6 +16,7 @@ import {
   saveTerminalSettings,
 } from "@/lib/terminal-settings";
 import type { SizingMode } from "@/lib/types";
+import InfoTooltip from "@/components/InfoTooltip";
 
 export default function TerminalSettings() {
   // Kalshi API
@@ -118,9 +119,19 @@ export default function TerminalSettings() {
 
   return (
     <div className="space-y-6 max-w-lg">
-      <h1 className="font-mono text-xl font-bold tracking-wider text-white">
-        Settings
-      </h1>
+      <div className="flex items-center gap-2">
+        <h1 className="font-mono text-xl font-bold tracking-wider text-white">
+          Settings
+        </h1>
+        <InfoTooltip href="/how-to#terminal">
+          <p className="text-neutral-200 font-medium mb-1">Terminal Setup</p>
+          <p>Generate API keys at Kalshi.com &rarr; Settings &rarr; API Keys. Paste the Key ID and upload the PEM file here.</p>
+          <p><span className="text-neutral-200">Edge Threshold</span> — Minimum edge (%) to recommend a trade.</p>
+          <p><span className="text-neutral-200">Sizing Mode</span> — Fixed contracts or fixed dollar amount per trade.</p>
+          <p><span className="text-neutral-200">Bet Amount</span> — Contracts or dollars per trade.</p>
+          <p className="text-neutral-600">Your keys stay in the browser and never touch our servers.</p>
+        </InfoTooltip>
+      </div>
 
       {/* ─── Kalshi API ─── */}
       <section className="space-y-3">

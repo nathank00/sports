@@ -7,6 +7,7 @@ import { fetchPositions, fetchNbaMarkets, fetchMlbMarkets } from "@/lib/kalshi-a
 import type { KalshiMarket, Sport } from "@/lib/types";
 import { AutopilotPositionManager, type GameState } from "@/lib/autopilot-position-manager";
 import AutopilotGameCard from "./AutopilotGameCard";
+import InfoTooltip from "@/components/InfoTooltip";
 import type {
   AutopilotSignal,
   AutopilotGame,
@@ -1118,7 +1119,18 @@ export default function AutopilotDashboard({ userId }: Props) {
         {/* Settings panel */}
         {showSettings && (
           <div className="mt-3 p-4 rounded-lg border border-neutral-800 bg-neutral-900/60">
-            <h3 className="text-sm font-medium mb-3">Execution Settings</h3>
+            <div className="flex items-center gap-2 mb-3">
+              <h3 className="text-sm font-medium">Execution Settings</h3>
+              <InfoTooltip href="/how-to#autopilot">
+                <p className="text-neutral-200 font-medium mb-1">Autopilot Settings</p>
+                <p><span className="text-neutral-200">Min Edge</span> — Minimum edge (%) to trigger a buy.</p>
+                <p><span className="text-neutral-200">Take Profit</span> — Auto-sell when bid rises this many cents above entry.</p>
+                <p><span className="text-neutral-200">Stop Loss</span> — Auto-sell when bid drops this many cents below entry.</p>
+                <p><span className="text-neutral-200">Bet Amount</span> — Dollars to spend per trade.</p>
+                <p><span className="text-neutral-200">Max Contracts</span> — Upper limit per order.</p>
+                <p className="text-neutral-600">Kalshi keys are set up in Terminal &rarr; Settings.</p>
+              </InfoTooltip>
+            </div>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
               <div>
                 <label className="text-neutral-500 block mb-1">

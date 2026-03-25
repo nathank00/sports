@@ -16,6 +16,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "[ EDGEMASTER ]",
   description: "Quantitative prediction market trading",
+  metadataBase: new URL("https://edgemaster.io"),
 };
 
 export default function RootLayout({
