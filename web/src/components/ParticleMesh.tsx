@@ -28,9 +28,9 @@ export default function ParticleMesh() {
     let animId: number;
     let particles: Particle[] = [];
 
-    const PARTICLE_COUNT = 110;
-    const CONNECTION_DIST = 150;
-    const DOT_RADIUS = 1.5;
+    const PARTICLE_COUNT = 160;
+    const CONNECTION_DIST = 180;
+    const DOT_RADIUS = 2;
 
     const init = () => {
       const dpr = window.devicePixelRatio || 1;
@@ -79,9 +79,9 @@ export default function ParticleMesh() {
           const dist = Math.sqrt(dx * dx + dy * dy);
 
           if (dist < CONNECTION_DIST) {
-            const opacity = (1 - dist / CONNECTION_DIST) * 0.18;
+            const opacity = (1 - dist / CONNECTION_DIST) * 0.3;
             ctx.strokeStyle = `rgba(255,255,255,${opacity})`;
-            ctx.lineWidth = 0.5;
+            ctx.lineWidth = 0.7;
             ctx.beginPath();
             ctx.moveTo(particles[i].x, particles[i].y);
             ctx.lineTo(particles[j].x, particles[j].y);
@@ -99,8 +99,8 @@ export default function ParticleMesh() {
         const dx = p.x - cx;
         const dy = p.y - cy;
         const distFromCenter = Math.sqrt(dx * dx + dy * dy);
-        const edgeFade = Math.max(0, 1 - distFromCenter / (maxR * 0.85));
-        const alpha = 0.35 * edgeFade;
+        const edgeFade = Math.max(0, 1 - distFromCenter / (maxR * 0.9));
+        const alpha = 0.55 * edgeFade;
 
         ctx.fillStyle = `rgba(255,255,255,${alpha})`;
         ctx.beginPath();
