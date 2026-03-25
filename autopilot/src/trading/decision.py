@@ -80,15 +80,16 @@ class TradeSignal:
 
 
 def _today_kalshi_date() -> str:
-    """Return today's date as a Kalshi ticker date fragment, e.g. '25MAR25'.
+    """Return today's date as a Kalshi ticker date fragment, e.g. '26MAR25'.
 
+    Kalshi format is YYMMMDD: 2-digit year, 3-letter month, 2-digit day.
     Uses US Eastern time since that's when Kalshi game dates roll over.
     """
     from datetime import datetime, timezone, timedelta
     et = timezone(timedelta(hours=-4))  # EDT
     now = datetime.now(et)
     months = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"]
-    return f"{now.day:02d}{months[now.month - 1]}{now.year % 100:02d}"
+    return f"{now.year % 100:02d}{months[now.month - 1]}{now.day:02d}"
 
 
 def match_markets(

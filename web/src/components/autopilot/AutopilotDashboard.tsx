@@ -752,7 +752,7 @@ export default function AutopilotDashboard({ userId }: Props) {
         const months = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
         const mon = months[d.getUTCMonth()];
         const yr = (d.getUTCFullYear() % 100).toString().padStart(2, "0");
-        dateStr = `${day}${mon}${yr}`;
+        dateStr = `${yr}${mon}${day}`;
       }
       const match = kalshiPositions.find(
         (p) => p.position > 0 && p.ticker.startsWith(sportConfig.tickerPrefix) &&

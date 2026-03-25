@@ -169,14 +169,14 @@ export async function GET() {
       const MONTHS = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
 
       for (const game of games) {
-        // Derive Kalshi date fragment from the game's start time
+        // Derive Kalshi date fragment from the game's start time (format: YYMMMDD)
         let gameDateStr = "";
         if (game.startTime) {
           const d = new Date(game.startTime);
           const day = d.getUTCDate().toString().padStart(2, "0");
           const mon = MONTHS[d.getUTCMonth()];
           const yr = (d.getUTCFullYear() % 100).toString().padStart(2, "0");
-          gameDateStr = `${day}${mon}${yr}`;
+          gameDateStr = `${yr}${mon}${day}`;
         }
 
         for (const market of markets) {

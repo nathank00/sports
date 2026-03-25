@@ -186,7 +186,7 @@ export async function GET() {
           const day = d.getUTCDate().toString().padStart(2, "0");
           const mon = MONTHS[d.getUTCMonth()];
           const yr = (d.getUTCFullYear() % 100).toString().padStart(2, "0");
-          gameDateStr = `${day}${mon}${yr}`;
+          gameDateStr = `${yr}${mon}${day}`;
         }
 
         for (const market of markets) {
