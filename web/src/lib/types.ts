@@ -184,6 +184,12 @@ export interface AutopilotGame {
   /** Pregame Kalshi prices (from public API, before model signals arrive). */
   kalshiHomePrice?: number | null;
   kalshiAwayPrice?: number | null;
+  /** Live game state from schedule endpoint (used before signals arrive). */
+  homeScore?: number;
+  awayScore?: number;
+  period?: number;
+  inningHalf?: string;
+  outs?: number;
 }
 
 // ── Autopilot v2 types (simplified — Kalshi is source of truth) ───────

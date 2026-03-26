@@ -196,27 +196,61 @@ function PregameCard({
   game,
   kalshiPosition,
   onManualExit,
+  sport,
 }: {
   game: AutopilotGame;
   kalshiPosition: PositionItem | null;
   onManualExit: (position: AutopilotPosition) => void;
+  sport: Sport;
 }) {
   const homePrice = game.kalshiHomePrice;
   const awayPrice = game.kalshiAwayPrice;
 
+  const detail = game.statusDetail?.toLowerCase() || "";
+  const isLive = sport === "mlb"
+    ? (detail.includes("top") || detail.includes("bot") || detail.includes("end") || detail.includes("mid") ||
+       (game.period != null && game.period > 0 && game.homeScore != null))
+    : (detail.includes("qtr") || detail.includes("half") || detail.includes("ot") ||
+       (game.period != null && game.period > 0 && game.homeScore != null && !detail.includes("final")));
+
   return (
     <div className="rounded-lg border border-neutral-800 bg-neutral-900/60 p-4">
-      {/* Teams + tipoff */}
+      {/* Teams + tipoff / live score */}
       <div className="flex items-center justify-between mb-3">
         <div className="text-sm">
-          <span className="text-neutral-400">{game.awayTeam}</span>
-          <span className="text-neutral-600 mx-2">@</span>
-          <span className="text-neutral-400">{game.homeTeam}</span>
+          {isLive && game.awayScore != null && game.homeScore != null ? (
+            <>
+              <span className="text-neutral-400">{game.awayTeam}</span>
+              <span className="text-white font-bold ml-2">{game.awayScore}</span>
+              <span className="text-neutral-600 mx-2">@</span>
+              <span className="text-white font-bold mr-2">{game.homeScore}</span>
+              <span className="text-neutral-400">{game.homeTeam}</span>
+            </>
+          ) : (
+            <>
+              <span className="text-neutral-400">{game.awayTeam}</span>
+              <span className="text-neutral-600 mx-2">@</span>
+              <span className="text-neutral-400">{game.homeTeam}</span>
+            </>
+          )}
         </div>
-        <span className="text-xs text-neutral-500">
-          {game.statusDetail ||
-            (game.startTime ? formatStartTime(game.startTime) : "Scheduled")}
-        </span>
+        {isLive && game.period != null ? (
+          sport === "mlb" ? (
+            <span className="text-xs text-neutral-500 flex items-center gap-1">
+              <span>{formatMlbInning(game.period, game.inningHalf)}</span>
+              <OutsIndicator outs={game.outs ?? 0} />
+            </span>
+          ) : (
+            <span className="text-xs text-neutral-500">
+              {game.statusDetail || formatNbaClock(game.period, 0)}
+            </span>
+          )
+        ) : (
+          <span className="text-xs text-neutral-500">
+            {game.statusDetail ||
+              (game.startTime ? formatStartTime(game.startTime) : "Scheduled")}
+          </span>
+        )}
       </div>
 
       {/* Kalshi market prices as implied probability bar */}
@@ -666,6 +700,7 @@ export default function AutopilotGameCard({
       game={game}
       kalshiPosition={kalshiPosition}
       onManualExit={onManualExit}
+      sport={sport}
     />
   );
 }

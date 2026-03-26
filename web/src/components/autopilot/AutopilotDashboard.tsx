@@ -106,6 +106,9 @@ interface ScheduledGame {
   statusDetail: string;
   kalshiHomePrice: number | null;
   kalshiAwayPrice: number | null;
+  /** MLB-specific fields from the schedule endpoint */
+  inningHalf?: string;
+  outs?: number;
 }
 
 interface Props {
@@ -528,6 +531,11 @@ export default function AutopilotDashboard({ userId }: Props) {
               statusDetail: sg.statusDetail || undefined,
               kalshiHomePrice: sg.kalshiHomePrice,
               kalshiAwayPrice: sg.kalshiAwayPrice,
+              homeScore: sg.homeScore,
+              awayScore: sg.awayScore,
+              period: sg.period,
+              inningHalf: sg.inningHalf,
+              outs: sg.outs,
             });
           } else {
             // New pregame entry
@@ -541,6 +549,11 @@ export default function AutopilotDashboard({ userId }: Props) {
               statusDetail: sg.statusDetail || undefined,
               kalshiHomePrice: sg.kalshiHomePrice,
               kalshiAwayPrice: sg.kalshiAwayPrice,
+              homeScore: sg.homeScore,
+              awayScore: sg.awayScore,
+              period: sg.period,
+              inningHalf: sg.inningHalf,
+              outs: sg.outs,
             });
           }
         }
