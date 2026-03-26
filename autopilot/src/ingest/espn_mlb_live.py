@@ -226,7 +226,8 @@ async def fetch_mlb_live_game_detail(
     away_comp = next((c for c in competitors if c.get("homeAway") == "away"), {})
 
     # Situation: outs, runners, inning half
-    situation = game_info.get("situation", {})
+    # The situation object lives at the root of the summary response, NOT inside header.competitions
+    situation = data.get("situation", {})
     outs = int(situation.get("outs", 0))
 
     # Runners on base
