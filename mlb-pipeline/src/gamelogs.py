@@ -581,8 +581,9 @@ def run_current_mode():
     date_from = now - timedelta(days=3)
     date_to = now + timedelta(days=1)
 
-    # Need 120 days of history for 50-game rolling window
-    hist_from = now - timedelta(days=120)
+    # Rolling windows need 50 games per player. MLB offseason is ~5 months,
+    # so we need 365 calendar days to guarantee enough games across the gap.
+    hist_from = now - timedelta(days=365)
 
     logger.info(f"=== CURRENT MODE: games {date_from.date()} to {date_to.date()} ===")
 

@@ -38,21 +38,24 @@ class MLBWinProbModel:
         #   6: margin_x_outs_frac — runs matter MORE as game progresses
         #   7: spread_x_outs_frac — spread influence fades over time
         #
-        # Calibrated against known baseball win expectancy:
-        # - 1-run lead in 5th ≈ 60% (sigmoid(0.4) ≈ 0.60)
-        # - 1-run lead in 9th top ≈ 80% (sigmoid(1.4) ≈ 0.80)
-        # - 3-run lead in 7th ≈ 90% (sigmoid(2.2) ≈ 0.90)
+        # Calibrated against historical baseball win expectancy tables:
+        # - 1-run lead in 2nd ≈ 57% | 3-run lead in 2nd ≈ 85%
+        # - 1-run lead in 9th ≈ 79% | 3-run lead in 7th ≈ 96%
         # - Tied game ≈ pregame odds early, ≈ 50% late
+        # - 5-0 lead in 5th ≈ 99%
+        #
+        # v2: reduced pregame prior (1.80→1.10), increased margin_x_outs interaction
+        # (0.45→0.85) so scoring events dominate over pregame anchoring.
         self.intercept = 0.0
         self.coefficients = [
-            0.55,    # score_margin: ~13% per run at midpoint
-            -0.30,   # outs_fraction: slight compression as game ends
+            0.55,    # score_margin: base per-run impact (~13% at midpoint)
+            -0.10,   # outs_fraction: slight compression as game ends
             0.02,    # inning: minimal direct effect
             0.08,    # is_home_batting: small home batting advantage
-            -0.12,   # pregame_spread: each run of spread ≈ 3% (negative = home favored → positive prob)
-            1.80,    # pregame_home_ml_prob: strong prior (centered at 0.5, so +1.80 * 0.6 = +1.08 logit for 60% favorite)
-            0.45,    # margin_x_outs_frac: runs matter more late (1 run in 9th vs 1st)
-            0.15,    # spread_x_outs_frac: spread influence slightly increases late (controversial, but pregame info stays relevant)
+            -0.12,   # pregame_spread: each run of spread ≈ 3%
+            1.10,    # pregame_home_ml_prob: moderate prior (reduced from 1.80 to prevent anchoring)
+            0.85,    # margin_x_outs_frac: runs matter more late — strong interaction
+            0.06,    # spread_x_outs_frac: pregame info fades as game progresses
         ]
 
     def predict(self, state: MLBGameState) -> float:
