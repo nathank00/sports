@@ -92,6 +92,28 @@ def fetch_paginated(table, select, filters=None, order_col=None):
     return all_rows
 
 
+def fetch_paginated_chunked(table, select, filters=None, order_col=None,
+                            date_col=None, date_from=None, date_to=None,
+                            chunk_days=60):
+    """Fetch large date ranges by splitting into smaller chunks to avoid
+    Supabase statement timeouts. Falls back to regular fetch if no date
+    range is provided."""
+    if not (date_col and date_from and date_to):
+        return fetch_paginated(table, select, filters, order_col)
+
+    all_rows = []
+    chunk_start = date_from
+    while chunk_start < date_to:
+        chunk_end = min(chunk_start + timedelta(days=chunk_days), date_to)
+        chunk_filters = list(filters or [])
+        chunk_filters.append(("gte", date_col, chunk_start.isoformat()))
+        chunk_filters.append(("lte", date_col, chunk_end.isoformat()))
+        rows = fetch_paginated(table, select, chunk_filters, order_col)
+        all_rows.extend(rows)
+        chunk_start = chunk_end + timedelta(days=1)
+    return all_rows
+
+
 # ---------------------------------------------------------------------------
 # 1. Fetch games and playerstats from Supabase
 # ---------------------------------------------------------------------------
@@ -121,10 +143,6 @@ def fetch_games(date_from=None, date_to=None, season_ids=None):
 def fetch_batting_stats(date_from=None, date_to=None, season_ids=None):
     """Fetch batting playerstats."""
     filters = [("eq", "STAT_TYPE", "batting")]
-    if date_from:
-        filters.append(("gte", "GAME_DATE", date_from.isoformat()))
-    if date_to:
-        filters.append(("lte", "GAME_DATE", date_to.isoformat()))
     if season_ids:
         filters.append(("in_", "SEASON_ID", season_ids))
 
@@ -133,7 +151,10 @@ def fetch_batting_stats(date_from=None, date_to=None, season_ids=None):
         "AB", "H", "R", "HR", "RBI", "BB", "SO", "SB", "PA",
         "BA", "OBP", "SLG", "OPS",
     ])
-    rows = fetch_paginated("mlb_playerstats", select + ",id", filters, order_col="id")
+    rows = fetch_paginated_chunked(
+        "mlb_playerstats", select + ",id", filters, order_col="id",
+        date_col="GAME_DATE", date_from=date_from, date_to=date_to,
+    )
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame(rows)
@@ -150,10 +171,6 @@ def fetch_batting_stats(date_from=None, date_to=None, season_ids=None):
 def fetch_pitching_stats(date_from=None, date_to=None, season_ids=None):
     """Fetch pitching playerstats."""
     filters = [("eq", "STAT_TYPE", "pitching")]
-    if date_from:
-        filters.append(("gte", "GAME_DATE", date_from.isoformat()))
-    if date_to:
-        filters.append(("lte", "GAME_DATE", date_to.isoformat()))
     if season_ids:
         filters.append(("in_", "SEASON_ID", season_ids))
 
@@ -162,7 +179,10 @@ def fetch_pitching_stats(date_from=None, date_to=None, season_ids=None):
         "IP", "H_P", "R_P", "ER", "BB_P", "SO_P", "HR_P", "BF", "PIT",
         "ERA", "WHIP",
     ])
-    rows = fetch_paginated("mlb_playerstats", select + ",id", filters, order_col="id")
+    rows = fetch_paginated_chunked(
+        "mlb_playerstats", select + ",id", filters, order_col="id",
+        date_col="GAME_DATE", date_from=date_from, date_to=date_to,
+    )
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame(rows)
