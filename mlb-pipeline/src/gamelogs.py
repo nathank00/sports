@@ -94,8 +94,8 @@ def fetch_paginated(table, select, filters=None, order_col=None):
 
 def fetch_paginated_chunked(table, select, filters=None, order_col=None,
                             date_col=None, date_from=None, date_to=None,
-                            chunk_days=60):
-    """Fetch large date ranges by splitting into smaller chunks to avoid
+                            chunk_days=14):
+    """Fetch large date ranges by splitting into smaller date chunks to avoid
     Supabase statement timeouts. Falls back to regular fetch if no date
     range is provided."""
     if not (date_col and date_from and date_to):
@@ -103,6 +103,7 @@ def fetch_paginated_chunked(table, select, filters=None, order_col=None,
 
     all_rows = []
     chunk_start = date_from
+    chunk_num = 0
     while chunk_start < date_to:
         chunk_end = min(chunk_start + timedelta(days=chunk_days), date_to)
         chunk_filters = list(filters or [])
@@ -110,6 +111,8 @@ def fetch_paginated_chunked(table, select, filters=None, order_col=None,
         chunk_filters.append(("lte", date_col, chunk_end.isoformat()))
         rows = fetch_paginated(table, select, chunk_filters, order_col)
         all_rows.extend(rows)
+        chunk_num += 1
+        logger.info(f"  chunk {chunk_num}: {chunk_start.date()} to {chunk_end.date()} → {len(rows)} rows")
         chunk_start = chunk_end + timedelta(days=1)
     return all_rows
 
