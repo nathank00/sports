@@ -71,19 +71,30 @@ LINEUP_WEIGHTS_NORM = LINEUP_WEIGHTS / LINEUP_WEIGHTS.sum()  # sum to 1.0
 # ---------------------------------------------------------------------------
 # Paginated Supabase fetch
 # ---------------------------------------------------------------------------
-def fetch_paginated(table, select, filters=None, order_col=None):
-    """Paginated Supabase fetch. order_col ensures stable pagination —
-    without it, rows can shift between pages causing data loss."""
+def fetch_paginated(table, select, filters=None, order_col=None, max_retries=3):
+    """Paginated Supabase fetch with retry on timeout. order_col ensures
+    stable pagination — without it, rows can shift between pages."""
     all_rows = []
     offset = 0
     while True:
-        query = supabase.table(table).select(select)
-        for method, col, val in (filters or []):
-            query = getattr(query, method)(col, val)
-        if order_col:
-            query = query.order(order_col)
-        query = query.range(offset, offset + PAGE_SIZE - 1)
-        response = query.execute()
+        for attempt in range(1, max_retries + 1):
+            try:
+                query = supabase.table(table).select(select)
+                for method, col, val in (filters or []):
+                    query = getattr(query, method)(col, val)
+                if order_col:
+                    query = query.order(order_col)
+                query = query.range(offset, offset + PAGE_SIZE - 1)
+                response = query.execute()
+                break
+            except Exception as e:
+                if "57014" in str(e) and attempt < max_retries:
+                    wait = attempt * 2
+                    logger.warning(f"  Query timeout (attempt {attempt}/{max_retries}), retrying in {wait}s...")
+                    import time
+                    time.sleep(wait)
+                else:
+                    raise
         batch = response.data or []
         all_rows.extend(batch)
         if len(batch) < PAGE_SIZE:
@@ -94,7 +105,7 @@ def fetch_paginated(table, select, filters=None, order_col=None):
 
 def fetch_paginated_chunked(table, select, filters=None, order_col=None,
                             date_col=None, date_from=None, date_to=None,
-                            chunk_days=14):
+                            chunk_days=7):
     """Fetch large date ranges by splitting into smaller date chunks to avoid
     Supabase statement timeouts. Falls back to regular fetch if no date
     range is provided."""
@@ -112,7 +123,8 @@ def fetch_paginated_chunked(table, select, filters=None, order_col=None,
         rows = fetch_paginated(table, select, chunk_filters, order_col)
         all_rows.extend(rows)
         chunk_num += 1
-        logger.info(f"  chunk {chunk_num}: {chunk_start.date()} to {chunk_end.date()} → {len(rows)} rows")
+        if rows:
+            logger.info(f"  chunk {chunk_num}: {chunk_start.date()} to {chunk_end.date()} → {len(rows)} rows")
         chunk_start = chunk_end + timedelta(days=1)
     return all_rows
 
